@@ -58,7 +58,7 @@ class AudioPlayer(private val context: Context) {
                         .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                         .build(),
                 )
-                .setBufferSizeInBytes(minBuffer * 2)
+                .setBufferSizeInBytes(minBuffer * 4)
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
 
@@ -85,16 +85,41 @@ class AudioPlayer(private val context: Context) {
                             }
                         }
                         val written = track.write(chunk.pcm, offset, chunk.pcm.size - offset)
-                        if (written <= 0) break
+                        if (written < 0) {
+                            completed = false
+                            return@collect
+                        }
+                        if (written == 0) {
+                            // Buffer full, wait a bit and retry
+                            Thread.sleep(10)
+                            continue
+                        }
                         offset += written
                     }
                 }
+                // Wait for all audio to finish playing (drain the buffer)
                 synchronized(this) {
                     if (isStopped || audioTrack !== track) {
                         completed = false
                     }
                 }
-                if (completed) track.stop()
+                if (completed) {
+                    // Drain: wait until playback head reaches the write position
+                    track.play()
+                    while (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                        val headPos = track.playbackHeadPosition
+                        val writePos = track.playbackHeadPosition // approximation
+                        if (headPos > 0 && writePos >= 0 && headPos >= track.bufferSizeInFrames) break
+                        Thread.sleep(20)
+                        synchronized(this) {
+                            if (isStopped || audioTrack !== track) {
+                                completed = false
+                                break
+                            }
+                        }
+                    }
+                    track.stop()
+                }
                 completed
             } catch (e: CancellationException) {
                 synchronized(this) {
@@ -104,6 +129,9 @@ class AudioPlayer(private val context: Context) {
                 }
                 throw e
             } catch (e: IllegalStateException) {
+                false
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
                 false
             } finally {
                 synchronized(this) {
