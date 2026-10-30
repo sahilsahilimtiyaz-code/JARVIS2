@@ -14,11 +14,21 @@
 - [ ] Install the signed APK on the Galaxy A54 and verify **Jarvis online**. Deferred until the first cloud build.
 - [ ] Install a second signed build over the first and confirm data is preserved. Deferred until the first cloud build.
 
-**Note:** no APK or build log exists yet. This environment has no local Java, Gradle or Android SDK, so the first compile check will happen when GitHub Actions is enabled at the end. The source will be kept build-ready in the meantime.
+**Note:** local compile checks were run with JDK 17, Gradle 9.6.0 and the Android SDK platform 37 (`/tmp/android-build/sdk`). `:app:compileDebugKotlin`, `:app:testDebugUnitTest` and `assembleDebug` are green, and the debug APK signs with the Android debug key. The owner has chosen to defer creating the GitHub repository and running the cloud build until the full app is complete, so no APK artifact exists yet.
 
 ## Phase 1 — Brain, chat, persona
 
-- [ ] Not started.
+- [x] Add the shared LLM model types, `LlmProvider.stream`, event types and provider exceptions.
+- [x] Add the OpenAI-compatible streaming adapter with tool-call accumulation and full-response parsing.
+- [x] Add the Gemini streaming adapter with function calling and provider-native schema conversion.
+- [x] Add the Anthropic Messages streaming adapter with top-level system, tool use and streaming text.
+- [x] Add the provider registry, fallback flow and provider connection tester.
+- [x] Add provider presets plus Settings UI for add, edit, save, test, default, reorder and remove.
+- [x] Add AES-GCM Android Keystore storage for provider API keys.
+- [x] Add persona prompt builder, owner onboarding and local greeting engine.
+- [x] Add Compose chat screen with streamed replies, tool activity, provider status, errors and retry.
+- [x] Green local build, unit tests and debug APK sign check.
+- [ ] Physical phone test with real provider keys, launch greeting and streamed chat. Deferred until the first signed APK and cloud build.
 
 ## Phase 2 — Voice
 

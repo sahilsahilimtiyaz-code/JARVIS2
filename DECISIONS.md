@@ -26,10 +26,19 @@
 - Debug builds do not use an `applicationIdSuffix`, so a debug APK can update the installed app without changing its application ID.
 - `android:allowBackup="false"` is set because an Android cloud backup would restore encrypted preference blobs without the hardware-backed Keystore key, causing undecryptable settings. Jarvis will provide explicit JSON export/import later.
 
+## 2026-10-30 — Phase 1 implementation
+
+- Phase 1 uses one shared `LlmProvider` interface and `AgentLoop` instead of provider-specific orchestration.
+- The OpenAI-compatible adapter covers OpenRouter, OpenAI, Groq, Together, Ollama and compatible endpoints; it emits text deltas and accumulates streamed tool calls.
+- Gemini uses `streamGenerateContent` with `systemInstruction` and `functionDeclarations`, converting the shared JSON schema to Gemini's dialect.
+- Anthropic uses the Messages API with a top-level `system` field, `tool_use`, and `tool_result` handling.
+- Phase 1 keeps conversation history in the UI layer for the current turn; Room-backed conversations and messages arrive with Phase 4 memory.
+- The greeting is generated locally by `GreetingEngine` and stored through the persona settings; spoken TTS arrives in Phase 2.
+
 ## 2026-10-30 — GitHub access deferred by the owner
 
-- The coding environment has no pre-existing GitHub authentication, no `gh`, and no local Java/Gradle/Android SDK.
+- The coding environment initially had no pre-existing GitHub authentication, no `gh`, and no local Java/Gradle/Android SDK; a local JDK 17, Gradle 9.6.0 and Android SDK platform 37 were provisioned later for compile checks.
 - The owner explicitly directed that GitHub setup, repository creation, pushing and cloud builds be deferred until the full app is complete. The pending device-login process was stopped; no GitHub repository was created and nothing was pushed.
-- Consequence: no APK is produced and no phase can be installed or tested on the phone until GitHub Actions is enabled at the end. Compile errors will accumulate until the first CI run. The source will still be written to the documented stable versions and kept as build-ready as possible.
+- Consequence: no physical phone install or device test has happened yet; no APK is produced until the first cloud build, and no phase can be installed or tested on the phone before that. Compile errors will accumulate until the first CI run. The source will still be written to the documented stable versions and kept as build-ready as possible.
 - The workflows and phone-only signing instructions remain in `.github/workflows/` and `README.md`, ready to use when the owner chooses to publish the repository.
 - All work is confined to `/sdcard/JARVIS2`. The earlier `/sdcard/JARVIS` project and the Brahma AI prototype were read once for context, then left untouched.

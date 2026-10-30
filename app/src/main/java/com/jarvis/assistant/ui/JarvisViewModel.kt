@@ -1,0 +1,741 @@
+package com.jarvis.assistant.ui
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.jarvis.assistant.brain.AgentEvent
+import com.jarvis.assistant.brain.AgentLoop
+import com.jarvis.assistant.brain.AgentRequest
+import com.jarvis.assistant.brain.HttpClientFactory
+import com.jarvis.assistant.brain.LlmMessage
+import com.jarvis.assistant.brain.ProviderConfig
+import com.jarvis.assistant.brain.ProviderException
+import com.jarvis.assistant.brain.ProviderKind
+import com.jarvis.assistant.brain.ProviderRegistry
+import com.jarvis.assistant.brain.ProviderTester
+import com.jarvis.assistant.persona.GreetingEngine
+import com.jarvis.assistant.persona.PersonaBuilder
+import com.jarvis.assistant.settings.AppSettings
+import com.jarvis.assistant.settings.OwnerProfile
+import com.jarvis.assistant.settings.PersonaSettings
+import com.jarvis.assistant.settings.ProviderSettings
+import com.jarvis.assistant.settings.SettingsRepository
+import com.jarvis.assistant.tools.ToolRegistry
+import java.net.URI
+import java.util.Locale
+import java.util.UUID
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+class JarvisViewModel(application: Application) : AndroidViewModel(application) {
+
+    private val appContext = application.applicationContext
+    private val settingsRepository = SettingsRepository(appContext)
+    private val personaBuilder = PersonaBuilder(appContext)
+    private val greetingEngine = GreetingEngine()
+    private val toolRegistry = ToolRegistry(appContext)
+    private val providerRegistry = ProviderRegistry(HttpClientFactory.create())
+    private val providerTester = ProviderTester(providerRegistry)
+    private val agentLoop = AgentLoop(providerRegistry, toolRegistry)
+
+    private val _ui = MutableStateFlow(JarvisUiState())
+    val ui: StateFlow<JarvisUiState> = _ui.asStateFlow()
+
+    private var sendJob: Job? = null
+    private var greetingShown = false
+    private var nextMessageNumber = 0L
+
+    init {
+        viewModelScope.launch {
+            val prompt = withContext(Dispatchers.IO) { personaBuilder.defaultPrompt() }
+            _ui.update { it.copy(defaultPersonaPrompt = prompt) }
+        }
+
+        viewModelScope.launch {
+            settingsRepository.settings.collect { settings ->
+                _ui.update { state ->
+                    state.copy(
+                        settings = settings,
+                        loading = false,
+                        onboardingComplete = settings.profile.name.isNotBlank(),
+                    )
+                }
+                if (
+                    settings.profile.name.isNotBlank() &&
+                    !greetingShown &&
+                    _ui.value.messages.isEmpty()
+                ) {
+                    addGreeting(settings)
+                }
+            }
+        }
+    }
+
+    fun onInputChange(value: String) {
+        _ui.update { it.copy(input = value) }
+    }
+
+    fun send() {
+        val snapshot = _ui.value
+        val text = snapshot.input.trim()
+        if (text.isEmpty() || snapshot.generating) return
+
+        val userMessage = ChatMessageUi(
+            id = newMessageId(),
+            author = ChatAuthor.USER,
+            text = text,
+        )
+        val assistantId = newMessageId()
+        val assistantMessage = ChatMessageUi(
+            id = assistantId,
+            author = ChatAuthor.JARVIS,
+            text = "",
+            streaming = true,
+        )
+
+        val history = snapshot.messages
+            .filter { !it.isError && !it.streaming && it.text.isNotBlank() }
+            .map { message ->
+                if (message.author == ChatAuthor.USER) {
+                    LlmMessage.user(message.text)
+                } else {
+                    LlmMessage.assistant(message.text)
+                }
+            }
+            .takeLast(30)
+
+        _ui.update { state ->
+            state.copy(
+                messages = state.messages + userMessage + assistantMessage,
+                input = "",
+                generating = true,
+                activeProvider = null,
+                toolActivity = null,
+                error = null,
+                notice = null,
+            )
+        }
+
+        sendJob = viewModelScope.launch {
+            try {
+                val providers = resolveProviders(snapshot.settings)
+                if (providers.isEmpty()) {
+                    fail(assistantId, NO_PROVIDER_MESSAGE)
+                    return@launch
+                }
+                val systemPrompt = withContext(Dispatchers.IO) {
+                    personaBuilder.build(snapshot.settings)
+                }
+                agentLoop.run(
+                    AgentRequest(
+                        systemPrompt = systemPrompt,
+                        history = history,
+                        userMessage = text,
+                        providers = providers,
+                        tools = toolRegistry.definitions(),
+                    ),
+                ).collect { event ->
+                    handleAgentEvent(assistantId, event)
+                }
+            } catch (e: CancellationException) {
+                markStopped(assistantId)
+                throw e
+            } catch (e: Exception) {
+                fail(
+                    assistantId,
+                    e.message?.take(400) ?: "Jarvis could not complete that request.",
+                )
+            }
+        }
+    }
+
+    fun stop() {
+        val job = sendJob
+        sendJob = null
+        if (job != null) {
+            job.cancel()
+        } else {
+            _ui.update { it.copy(generating = false, toolActivity = null) }
+        }
+    }
+
+    fun retryLast() {
+        val state = _ui.value
+        if (state.generating) return
+        val lastUserIndex = state.messages.indexOfLast { it.author == ChatAuthor.USER }
+        if (lastUserIndex < 0) return
+        val lastUser = state.messages[lastUserIndex]
+        val remaining = state.messages.take(lastUserIndex)
+        _ui.update {
+            it.copy(
+                messages = remaining,
+                input = lastUser.text,
+                error = null,
+                notice = null,
+            )
+        }
+        send()
+    }
+
+    fun openSettings() {
+        _ui.update { it.copy(showSettings = true, notice = null) }
+    }
+
+    fun closeSettings() {
+        _ui.update { it.copy(showSettings = false, notice = null) }
+    }
+
+    fun dismissError() {
+        _ui.update { it.copy(error = null) }
+    }
+
+    fun dismissNotice() {
+        _ui.update { it.copy(notice = null) }
+    }
+
+    fun saveProfile(profile: OwnerProfile) {
+        val name = profile.name.trim()
+        if (name.isEmpty()) {
+            setError("Please enter your name before we begin.")
+            return
+        }
+        val clean = profile.copy(
+            name = name,
+            title = profile.title.trim().ifBlank { "sir" },
+            occupation = profile.occupation.trim(),
+            preferences = profile.preferences.trim(),
+        )
+        _ui.update { it.copy(onboardingBusy = true, error = null) }
+        viewModelScope.launch {
+            try {
+                settingsRepository.saveProfile(clean)
+                _ui.update {
+                    it.copy(
+                        onboardingBusy = false,
+                        notice = "Profile saved.",
+                        error = null,
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _ui.update {
+                    it.copy(
+                        onboardingBusy = false,
+                        error = e.message?.take(400) ?: "Could not save your profile.",
+                    )
+                }
+            }
+        }
+    }
+
+    fun savePersona(tone: String, customPrompt: String?) {
+        viewModelScope.launch {
+            try {
+                settingsRepository.savePersona(
+                    PersonaSettings(
+                        tone = tone,
+                        customPrompt = customPrompt,
+                    ),
+                )
+                setNotice("Persona saved. It applies to the next message.")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                setError(e.message?.take(400) ?: "Could not save the persona.")
+            }
+        }
+    }
+
+    fun resetPersonaPrompt(tone: String) {
+        savePersona(tone = tone, customPrompt = null)
+    }
+
+    fun saveProvider(provider: ProviderSettings, newApiKey: String = "") {
+        if (provider.id.isBlank()) {
+            setError("This provider has not been saved yet.")
+            return
+        }
+        validateProvider(provider)?.let {
+            setError(it)
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val encrypted = withContext(Dispatchers.IO) {
+                    if (newApiKey.isNotBlank()) {
+                        settingsRepository.encryptApiKey(newApiKey.trim())
+                    } else {
+                        provider.encryptedApiKey
+                    }
+                }
+                settingsRepository.update { current ->
+                    val updatedProvider = provider.copy(encryptedApiKey = encrypted)
+                    val exists = current.providers.any { it.id == provider.id }
+                    current.copy(
+                        providers = if (exists) {
+                            current.providers.map {
+                                if (it.id == provider.id) updatedProvider else it
+                            }
+                        } else {
+                            current.providers + updatedProvider
+                        },
+                        defaultProviderId = current.defaultProviderId.ifBlank {
+                            updatedProvider.id
+                        },
+                    )
+                }
+                setNotice("Provider saved.")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                setError(e.message?.take(400) ?: "Could not save the provider.")
+            }
+        }
+    }
+
+    fun addProvider(
+        kind: ProviderKind,
+        name: String,
+        baseUrl: String,
+        model: String,
+        apiKey: String,
+    ) {
+        val provisional = ProviderSettings(
+            id = "pending",
+            name = name.trim(),
+            kind = kind,
+            baseUrl = baseUrl.trim(),
+            model = model.trim(),
+        )
+        validateProvider(provisional)?.let {
+            setError(it)
+            return
+        }
+        viewModelScope.launch {
+            try {
+                val encrypted = withContext(Dispatchers.IO) {
+                    if (apiKey.isNotBlank()) {
+                        settingsRepository.encryptApiKey(apiKey.trim())
+                    } else {
+                        ""
+                    }
+                }
+                val id = "${kind.name.lowercase(Locale.US)}_${UUID.randomUUID().toString().take(8)}"
+                settingsRepository.update { current ->
+                    val newProvider = provisional.copy(
+                        id = id,
+                        encryptedApiKey = encrypted,
+                    )
+                    current.copy(
+                        providers = current.providers + newProvider,
+                        defaultProviderId = current.defaultProviderId.ifBlank { id },
+                    )
+                }
+                setNotice("Provider added.")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                setError(e.message?.take(400) ?: "Could not add the provider.")
+            }
+        }
+    }
+
+    fun removeProvider(providerId: String) {
+        viewModelScope.launch {
+            try {
+                settingsRepository.update { current ->
+                    val remaining = current.providers.filterNot { it.id == providerId }
+                    current.copy(
+                        providers = remaining,
+                        defaultProviderId = if (current.defaultProviderId == providerId) {
+                            remaining.firstOrNull()?.id.orEmpty()
+                        } else {
+                            current.defaultProviderId
+                        },
+                    )
+                }
+                _ui.update {
+                    it.copy(
+                        providerTests = it.providerTests - providerId,
+                        notice = "Provider removed.",
+                        error = null,
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                setError(e.message?.take(400) ?: "Could not remove the provider.")
+            }
+        }
+    }
+
+    fun setDefaultProvider(providerId: String) {
+        viewModelScope.launch {
+            try {
+                settingsRepository.update { current ->
+                    current.copy(defaultProviderId = providerId)
+                }
+                setNotice("Default provider updated.")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                setError(e.message?.take(400) ?: "Could not change the default provider.")
+            }
+        }
+    }
+
+    fun moveProvider(providerId: String, delta: Int) {
+        viewModelScope.launch {
+            try {
+                settingsRepository.update { current ->
+                    val providers = current.providers.toMutableList()
+                    val index = providers.indexOfFirst { it.id == providerId }
+                    if (index < 0) return@update current
+                    val target = index + delta
+                    if (target !in providers.indices) return@update current
+                    val item = providers.removeAt(index)
+                    providers.add(target, item)
+                    current.copy(providers = providers)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                setError(e.message?.take(400) ?: "Could not reorder the providers.")
+            }
+        }
+    }
+
+    fun setProviderEnabled(providerId: String, enabled: Boolean) {
+        viewModelScope.launch {
+            try {
+                settingsRepository.update { current ->
+                    val providers = current.providers.map {
+                        if (it.id == providerId) it.copy(enabled = enabled) else it
+                    }
+                    val defaultId = if (!enabled && current.defaultProviderId == providerId) {
+                        providers.firstOrNull { it.enabled }?.id ?: current.defaultProviderId
+                    } else {
+                        current.defaultProviderId
+                    }
+                    current.copy(providers = providers, defaultProviderId = defaultId)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                setError(e.message?.take(400) ?: "Could not update the provider.")
+            }
+        }
+    }
+
+    fun testProvider(provider: ProviderSettings, draftKey: String = "") {
+        if (provider.id.isBlank()) {
+            setProviderTest(provider.id, ProviderTestState.Failure("Save the provider first."))
+            return
+        }
+        if (_ui.value.providerTests[provider.id] is ProviderTestState.Testing) return
+        validateProvider(provider)?.let {
+            setProviderTest(provider.id, ProviderTestState.Failure(it))
+            return
+        }
+        setProviderTest(provider.id, ProviderTestState.Testing)
+        viewModelScope.launch {
+            try {
+                val key = withContext(Dispatchers.IO) {
+                    if (draftKey.isNotBlank()) {
+                        draftKey.trim()
+                    } else {
+                        settingsRepository.decryptApiKey(provider)
+                    }
+                }
+                if (key.isBlank()) {
+                    setProviderTest(
+                        provider.id,
+                        ProviderTestState.Failure(
+                            "Enter an API key first, or save one with the provider.",
+                        ),
+                    )
+                    return@launch
+                }
+                val result = providerTester.test(provider.toConfig(key))
+                setProviderTest(
+                    provider.id,
+                    if (result.success) {
+                        ProviderTestState.Success(result.message)
+                    } else {
+                        ProviderTestState.Failure(result.message)
+                    },
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                setProviderTest(
+                    provider.id,
+                    ProviderTestState.Failure(
+                        e.message?.take(400) ?: "The connection test failed.",
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun handleAgentEvent(assistantId: String, event: AgentEvent) {
+        when (event) {
+            is AgentEvent.TextDelta -> {
+                _ui.update { state ->
+                    state.copy(
+                        messages = state.messages.map { message ->
+                            if (message.id == assistantId) {
+                                message.copy(
+                                    text = message.text + event.text,
+                                    providerName = event.providerName,
+                                    streaming = true,
+                                )
+                            } else {
+                                message
+                            }
+                        },
+                        activeProvider = event.providerName,
+                        toolActivity = null,
+                    )
+                }
+            }
+
+            is AgentEvent.ProviderFallback -> {
+                _ui.update {
+                    it.copy(
+                        toolActivity = "${event.from} is unavailable. Trying ${event.to}...",
+                    )
+                }
+            }
+
+            is AgentEvent.ToolStarted -> {
+                _ui.update { state ->
+                    state.copy(
+                        // Tool rounds restart the visible answer. A blank line keeps
+                        // "let me check" and the final answer from running together.
+                        messages = state.messages.map { message ->
+                            if (message.id == assistantId && message.text.isNotBlank()) {
+                                message.copy(text = message.text.trimEnd() + "\n\n")
+                            } else {
+                                message
+                            }
+                        },
+                        toolActivity = toolActivityLabel(event.name),
+                    )
+                }
+            }
+
+            is AgentEvent.ToolFinished -> {
+                _ui.update {
+                    it.copy(
+                        toolActivity = if (event.success) {
+                            "Done."
+                        } else {
+                            "A tool reported a problem. Adjusting..."
+                        },
+                    )
+                }
+            }
+
+            is AgentEvent.Completed -> {
+                _ui.update { state ->
+                    state.copy(
+                        messages = state.messages.map { message ->
+                            if (message.id == assistantId) {
+                                message.copy(
+                                    text = message.text.trimEnd(),
+                                    streaming = false,
+                                    providerName = event.providerName,
+                                )
+                            } else {
+                                message
+                            }
+                        },
+                        generating = false,
+                        activeProvider = event.providerName,
+                        toolActivity = null,
+                    )
+                }
+            }
+
+            is AgentEvent.Error -> fail(assistantId, event.message)
+        }
+    }
+
+    private fun fail(assistantId: String, message: String) {
+        _ui.update { state ->
+            val target = state.messages.firstOrNull { it.id == assistantId }
+            val hasText = !target?.text.isNullOrBlank()
+            state.copy(
+                messages = state.messages.map { chat ->
+                    if (chat.id != assistantId) {
+                        chat
+                    } else if (hasText) {
+                        chat.copy(streaming = false)
+                    } else {
+                        chat.copy(
+                            text = message,
+                            streaming = false,
+                            isError = true,
+                        )
+                    }
+                },
+                generating = false,
+                activeProvider = null,
+                toolActivity = null,
+                error = message,
+            )
+        }
+    }
+
+    private fun markStopped(assistantId: String) {
+        _ui.update { state ->
+            state.copy(
+                messages = state.messages
+                    .filterNot { it.id == assistantId && it.text.isBlank() }
+                    .map { chat ->
+                        if (chat.id == assistantId) chat.copy(streaming = false) else chat
+                    },
+                generating = false,
+                activeProvider = null,
+                toolActivity = null,
+            )
+        }
+    }
+
+    private fun addGreeting(settings: AppSettings) {
+        greetingShown = true
+        val greeting = greetingEngine.next(
+            profile = settings.profile,
+            lastGreetingId = settings.persona.lastGreetingId,
+        )
+        _ui.update { state ->
+            state.copy(
+                messages = state.messages + ChatMessageUi(
+                    id = newMessageId(),
+                    author = ChatAuthor.JARVIS,
+                    text = greeting.text,
+                ),
+            )
+        }
+        viewModelScope.launch {
+            runCatching {
+                settingsRepository.update { current ->
+                    current.copy(
+                        persona = current.persona.copy(lastGreetingId = greeting.id),
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun resolveProviders(settings: AppSettings): List<ProviderConfig> =
+        withContext(Dispatchers.IO) {
+            val default = settings.defaultProvider
+            val ordered = buildList {
+                if (default != null) add(default)
+                addAll(settings.providers.filter { it.id != default?.id })
+            }
+
+            var keyError: String? = null
+            val configs = mutableListOf<ProviderConfig>()
+            for (provider in ordered) {
+                if (!provider.enabled || !provider.hasSavedKey) continue
+                try {
+                    val key = settingsRepository.decryptApiKey(provider)
+                    if (key.isBlank()) {
+                        keyError = "The saved API key for ${provider.name} is empty. Re-enter it in Settings."
+                    } else {
+                        configs += provider.toConfig(key)
+                    }
+                } catch (e: Exception) {
+                    keyError = e.message?.take(400)
+                        ?: "A saved API key could not be decrypted."
+                }
+            }
+            if (configs.isEmpty() && keyError != null) {
+                throw ProviderException(keyError)
+            }
+            configs
+        }
+
+    private fun validateProvider(provider: ProviderSettings): String? {
+        if (provider.name.isBlank()) return "Give the provider a name."
+        if (!isHttpUrl(provider.baseUrl)) {
+            return "Base URL must be a full http:// or https:// address."
+        }
+        if (provider.model.isBlank()) return "Enter a model name."
+        return null
+    }
+
+    private fun isHttpUrl(value: String): Boolean = runCatching {
+        val uri = URI(value.trim())
+        (uri.scheme.equals("http", ignoreCase = true) ||
+            uri.scheme.equals("https", ignoreCase = true)) &&
+            !uri.host.isNullOrBlank()
+    }.getOrDefault(false)
+
+    private fun ProviderSettings.toConfig(apiKey: String): ProviderConfig = ProviderConfig(
+        id = id,
+        name = name,
+        kind = kind,
+        baseUrl = baseUrl.trim().trimEnd('/'),
+        model = model.trim(),
+        apiKey = apiKey,
+    )
+
+    private fun setProviderTest(providerId: String, state: ProviderTestState) {
+        if (providerId.isBlank()) return
+        _ui.update {
+            it.copy(providerTests = it.providerTests + (providerId to state))
+        }
+    }
+
+    private fun setError(message: String) {
+        _ui.update {
+            it.copy(
+                error = message,
+                notice = null,
+                onboardingBusy = false,
+            )
+        }
+    }
+
+    private fun setNotice(message: String) {
+        _ui.update {
+            it.copy(
+                notice = message,
+                error = null,
+            )
+        }
+    }
+
+    private fun toolActivityLabel(name: String): String = when (name) {
+        "get_current_time" -> "Checking the current time..."
+        else -> "Using ${name.replace('_', ' ')}..."
+    }
+
+    private fun newMessageId(): String {
+        nextMessageNumber += 1
+        return "message_$nextMessageNumber"
+    }
+
+    override fun onCleared() {
+        sendJob?.cancel()
+        sendJob = null
+        super.onCleared()
+    }
+
+    private companion object {
+        const val NO_PROVIDER_MESSAGE =
+            "No AI provider is configured. Open Settings, add an API key for OpenRouter, Gemini or Anthropic, then try again."
+    }
+}

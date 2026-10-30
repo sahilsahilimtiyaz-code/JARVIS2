@@ -14,6 +14,10 @@ private val JarvisDarkScheme = darkColorScheme(
     onPrimaryContainer = Color(0xFFC9EEFF),
     secondary = Color(0xFF81D4FA),
     onSecondary = Color(0xFF003545),
+    secondaryContainer = Color(0xFF17343E),
+    onSecondaryContainer = Color(0xFFC9EEFF),
+    tertiary = Color(0xFF9CCFD8),
+    onTertiary = Color(0xFF00363D),
     background = Color(0xFF061116),
     onBackground = Color(0xFFE2F3FA),
     surface = Color(0xFF0A171D),
@@ -21,7 +25,11 @@ private val JarvisDarkScheme = darkColorScheme(
     surfaceVariant = Color(0xFF1D3038),
     onSurfaceVariant = Color(0xFFB6CAD3),
     outline = Color(0xFF52676F),
+    outlineVariant = Color(0xFF2B414A),
     error = Color(0xFFFFB4AB),
+    onError = Color(0xFF690005),
+    errorContainer = Color(0xFF5C1A1A),
+    onErrorContainer = Color(0xFFFFDAD6),
 )
 
 @Composable
