@@ -843,9 +843,15 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         }
         val fallbackEngine = if (config.provider != VoiceProvider.SYSTEM) systemTtsEngine else null
         var ok = false
-        bargeInDetector.start {
-            interruptSpeech()
-            startListening()
+        val hasMicPermission = ContextCompat.checkSelfPermission(
+            appContext,
+            android.Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (hasMicPermission) {
+            bargeInDetector.start {
+                interruptSpeech()
+                startListening()
+            }
         }
         try {
             try {
@@ -857,7 +863,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 runCatching { fallbackEngine.speak(sentence, config.copy(provider = VoiceProvider.SYSTEM), audioPlayer) }
             }
         } finally {
-            bargeInDetector.stop()
+            if (hasMicPermission) bargeInDetector.stop()
             _ui.update { it.copy(speaking = false) }
         }
     }

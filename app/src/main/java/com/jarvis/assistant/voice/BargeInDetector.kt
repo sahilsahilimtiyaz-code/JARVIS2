@@ -30,6 +30,10 @@ class BargeInDetector(private val context: Context) {
                 encoding,
                 minBuffer * 2,
             )
+            if (recorder.state != AudioRecord.STATE_INITIALIZED) {
+                recorder.release()
+                return@launch
+            }
             val aec = AcousticEchoCanceler.create(recorder.audioSessionId)
             aec?.enabled = true
 
