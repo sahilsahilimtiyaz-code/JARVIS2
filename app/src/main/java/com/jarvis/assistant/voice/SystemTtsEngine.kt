@@ -13,6 +13,8 @@ import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 
 class SystemTtsEngine(context: Context) : TtsEngine {
+    override var lastError: String? = null
+        private set
     private val appContext = context.applicationContext
     private var tts: TextToSpeech? = null
     private val ready = CompletableDeferred<Boolean>()
@@ -25,8 +27,14 @@ class SystemTtsEngine(context: Context) : TtsEngine {
 
     override suspend fun speak(text: String, config: TtsConfig, player: AudioPlayer): Boolean =
         withContext(Dispatchers.Main) {
-            if (!ready.await()) return@withContext false
-            val engine = tts ?: return@withContext false
+            if (!ready.await()) {
+                lastError = "System TTS is not available on this phone."
+                return@withContext false
+            }
+            val engine = tts ?: run {
+                lastError = "System TTS is not available on this phone."
+                return@withContext false
+            }
             engine.setSpeechRate(config.speed.coerceIn(0.5f, 2.0f))
             val utteranceId = "jarvis_${UUID.randomUUID()}"
             suspendCancellableCoroutine { continuation ->
@@ -37,9 +45,11 @@ class SystemTtsEngine(context: Context) : TtsEngine {
                     }
                     @Deprecated("Deprecated in Java")
                     override fun onError(utteranceId: String?) {
+                        lastError = "System TTS failed."
                         if (!continuation.isCompleted) continuation.resume(false)
                     }
                     override fun onError(utteranceId: String?, errorCode: Int) {
+                        lastError = "System TTS failed with code $errorCode."
                         if (!continuation.isCompleted) continuation.resume(false)
                     }
                 })

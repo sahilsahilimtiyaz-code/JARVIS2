@@ -13,8 +13,15 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 
 class ElevenLabsTtsEngine(private val client: OkHttpClient) : TtsEngine {
+    override var lastError: String? = null
+        private set
+
     override suspend fun speak(text: String, config: TtsConfig, player: AudioPlayer): Boolean {
-        if (config.apiKey.isBlank() || config.voiceId.isBlank()) return false
+        lastError = null
+        if (config.apiKey.isBlank() || config.voiceId.isBlank()) {
+            lastError = "ElevenLabs needs an API key and voice id."
+            return false
+        }
         val voiceSettings = JSONObject().apply {
             put("stability", 0.5)
             put("similarity_boost", 0.75)
@@ -39,8 +46,15 @@ class ElevenLabsTtsEngine(private val client: OkHttpClient) : TtsEngine {
         val call = client.newCall(request)
         return try {
             call.execute().use { response ->
-                if (!response.isSuccessful) return false
-                val body = response.body ?: return false
+                if (!response.isSuccessful) {
+                    lastError = "ElevenLabs returned HTTP ${response.code}: ${response.body?.string()?.take(200).orEmpty()}"
+                    return false
+                }
+                val body = response.body
+                if (body == null) {
+                    lastError = "ElevenLabs returned an empty response."
+                    return false
+                }
                 val chunks: Flow<TtsAudioChunk> = flow {
                     val source = body.source()
                     val buffer = ByteArray(8192)
@@ -50,14 +64,18 @@ class ElevenLabsTtsEngine(private val client: OkHttpClient) : TtsEngine {
                         emit(TtsAudioChunk(buffer.copyOf(read), 24000))
                     }
                 }.flowOn(Dispatchers.IO)
-                player.playPcm(chunks, 24000)
-                true
+                val played = player.playPcm(chunks, 24000)
+                if (!played) {
+                    lastError = "ElevenLabs audio playback failed."
+                }
+                played
             }
         } catch (e: CancellationException) {
             call.cancel()
             throw e
         } catch (e: IOException) {
             call.cancel()
+            lastError = e.message ?: "ElevenLabs network error."
             false
         } finally {
             call.cancel()

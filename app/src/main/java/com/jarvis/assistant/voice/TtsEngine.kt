@@ -19,6 +19,7 @@ data class TtsAudioChunk(
 )
 
 interface TtsEngine {
+    val lastError: String?
     suspend fun speak(text: String, config: TtsConfig, player: AudioPlayer): Boolean
 }
 

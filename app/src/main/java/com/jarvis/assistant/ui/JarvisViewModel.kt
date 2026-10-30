@@ -858,9 +858,15 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 ok = engine.speak(sentence, config, audioPlayer)
             } catch (e: Exception) {
                 ok = false
+                engine.lastError?.let { setError(it) }
             }
             if (!ok && config.fallbackToSystem && fallbackEngine != null) {
-                runCatching { fallbackEngine.speak(sentence, config.copy(provider = VoiceProvider.SYSTEM), audioPlayer) }
+                val fallbackOk = runCatching { fallbackEngine.speak(sentence, config.copy(provider = VoiceProvider.SYSTEM), audioPlayer) }.getOrDefault(false)
+                if (!fallbackOk) {
+                    setError(fallbackEngine.lastError ?: "Voice playback failed.")
+                }
+            } else if (!ok) {
+                setError(engine.lastError ?: "Voice playback failed.")
             }
         } finally {
             if (hasMicPermission) bargeInDetector.stop()
