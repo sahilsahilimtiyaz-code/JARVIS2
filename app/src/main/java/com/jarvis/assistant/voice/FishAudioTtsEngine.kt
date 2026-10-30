@@ -68,9 +68,9 @@ class FishAudioTtsEngine(private val client: OkHttpClient) : TtsEngine {
         } catch (e: CancellationException) {
             call.cancel()
             throw e
-        } catch (e: IOException) {
+        } catch (e: Exception) {
             call.cancel()
-            lastError = e.message ?: "Fish Audio network error."
+            lastError = e.message ?: "Fish Audio network or playback error."
             false
         } finally {
             call.cancel()
