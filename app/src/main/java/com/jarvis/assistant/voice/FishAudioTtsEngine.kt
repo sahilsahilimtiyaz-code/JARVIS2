@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -40,30 +41,32 @@ class FishAudioTtsEngine(private val client: OkHttpClient) : TtsEngine {
 
         val call = client.newCall(request)
         return try {
-            call.execute().use { response ->
-                if (!response.isSuccessful) {
-                    lastError = "Fish Audio returned HTTP ${response.code}: ${response.body?.string()?.take(200).orEmpty()}"
-                    return false
-                }
-                val body = response.body
-                if (body == null) {
-                    lastError = "Fish Audio returned an empty response."
-                    return false
-                }
-                val chunks: Flow<TtsAudioChunk> = flow {
-                    val source = body.source()
-                    val buffer = ByteArray(8192)
-                    while (true) {
-                        val read = source.read(buffer)
-                        if (read == -1) break
-                        emit(TtsAudioChunk(buffer.copyOf(read), 24000))
+            withContext(Dispatchers.IO) {
+                call.execute().use { response ->
+                    if (!response.isSuccessful) {
+                        lastError = "Fish Audio returned HTTP ${response.code}: ${response.body?.string()?.take(200).orEmpty()}"
+                        return@withContext false
                     }
-                }.flowOn(Dispatchers.IO)
-                val played = player.playPcm(chunks, 24000)
-                if (!played) {
-                    lastError = "Fish Audio audio playback failed."
+                    val body = response.body
+                    if (body == null) {
+                        lastError = "Fish Audio returned an empty response."
+                        return@withContext false
+                    }
+                    val chunks: Flow<TtsAudioChunk> = flow {
+                        val source = body.source()
+                        val buffer = ByteArray(8192)
+                        while (true) {
+                            val read = source.read(buffer)
+                            if (read == -1) break
+                            emit(TtsAudioChunk(buffer.copyOf(read), 24000))
+                        }
+                    }.flowOn(Dispatchers.IO)
+                    val played = player.playPcm(chunks, 24000)
+                    if (!played) {
+                        lastError = "Fish Audio audio playback failed."
+                    }
+                    played
                 }
-                played
             }
         } catch (e: CancellationException) {
             call.cancel()
