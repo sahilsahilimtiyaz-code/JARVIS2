@@ -36,6 +36,9 @@ class AudioPlayer(private val context: Context) {
 
     suspend fun playPcm(chunks: Flow<TtsAudioChunk>, sampleRate: Int): Boolean =
         withContext(Dispatchers.IO) {
+            synchronized(this) {
+                isStopped = false
+            }
             val minBuffer = AudioTrack.getMinBufferSize(
                 sampleRate,
                 AudioFormat.CHANNEL_OUT_MONO,
@@ -60,10 +63,6 @@ class AudioPlayer(private val context: Context) {
                 .build()
 
             synchronized(this) {
-                if (isStopped) {
-                    track.release()
-                    return@withContext false
-                }
                 audioTrack = track
                 isStopped = false
             }
