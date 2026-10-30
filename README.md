@@ -2,9 +2,9 @@
 
 Jarvis is a private, native Kotlin personal assistant for Android 14+ (minSdk 31). It is designed to be sideloaded onto its owner's Samsung Galaxy A54, never published on Google Play.
 
-This is **Phase 1**: the app now has a native streaming chat, provider settings, onboarding, persona and greeting. The first launch collects your profile, and after it saves you can chat in text while Jarvis answers in the dark Compose interface. Voice, phone tools, memory and later phases are still ahead.
+This is **Phase 2**: the app now has a native streaming chat, provider settings, onboarding, persona, greeting, and voice. You can tap the mic, speak, and Jarvis answers aloud using Fish Audio, ElevenLabs, or Android system TTS. Voice settings, audio focus, interruption, and launch greeting are included. Phone tools, memory, and later phases are still ahead.
 
-**Current status:** Phase 1 source is implemented and a local `assembleDebug` plus unit tests are green. The owner has chosen to defer creating the GitHub repository and running the cloud build until the full app is complete, so no APK artifact exists yet. The build and signing steps below are ready for when that happens.
+**Current status:** Phase 2 source is implemented and a local `assembleDebug` plus unit tests are green. The owner has chosen to defer creating the GitHub repository and running the cloud build until the full app is complete, so no APK artifact exists yet. The build and signing steps below are ready for when that happens.
 
 ## Phase 1 test checklist
 
@@ -14,6 +14,8 @@ Before moving to Phase 2, the owner should confirm on the phone:
 2. Add an OpenRouter API key (or Gemini key), choose a model, and tap **Save** and **Test**.
 3. Send a text message from the chat composer.
 4. Confirm the reply streams into the chat and the provider name is shown.
+
+## Phase 2 test checklist
 
 ## Set up the permanent signing key first
 

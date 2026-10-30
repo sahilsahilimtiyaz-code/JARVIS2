@@ -4,6 +4,13 @@ import com.jarvis.assistant.brain.ProviderKind
 import kotlinx.serialization.Serializable
 
 @Serializable
+enum class VoiceProvider(val label: String) {
+    SYSTEM("Android system voice"),
+    FISH_AUDIO("Fish Audio"),
+    ELEVENLABS("ElevenLabs"),
+}
+
+@Serializable
 data class OwnerProfile(
     val name: String = "",
     val title: String = "sir",
@@ -32,11 +39,24 @@ data class PersonaSettings(
 )
 
 @Serializable
+data class VoiceSettings(
+    val provider: VoiceProvider = VoiceProvider.SYSTEM,
+    val encryptedApiKey: String = "",
+    val voiceId: String = "",
+    val speed: Float = 1.0f,
+    val fallbackToSystem: Boolean = true,
+    val language: String = "en",
+) {
+    val hasSavedKey: Boolean get() = encryptedApiKey.isNotBlank()
+}
+
+@Serializable
 data class AppSettings(
     val profile: OwnerProfile = OwnerProfile(),
     val providers: List<ProviderSettings> = defaultProviderSettings(),
     val defaultProviderId: String = "openrouter",
     val persona: PersonaSettings = PersonaSettings(),
+    val voice: VoiceSettings = VoiceSettings(),
 ) {
     val defaultProvider: ProviderSettings?
         get() = providers.firstOrNull { it.id == defaultProviderId }

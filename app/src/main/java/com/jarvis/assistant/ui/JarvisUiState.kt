@@ -27,6 +27,8 @@ data class JarvisUiState(
     val messages: List<ChatMessageUi> = emptyList(),
     val input: String = "",
     val generating: Boolean = false,
+    val listening: Boolean = false,
+    val speaking: Boolean = false,
     val activeProvider: String? = null,
     val toolActivity: String? = null,
     val error: String? = null,

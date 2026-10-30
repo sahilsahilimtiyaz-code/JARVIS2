@@ -55,6 +55,23 @@ class SettingsRepository(
             )
         }
 
+    suspend fun saveVoice(voice: VoiceSettings, newApiKey: String = ""): AppSettings =
+        update { current ->
+            val encrypted = if (newApiKey.isNotBlank()) {
+                encryptApiKey(newApiKey.trim())
+            } else {
+                voice.encryptedApiKey
+            }
+            current.copy(
+                voice = voice.copy(
+                    encryptedApiKey = encrypted,
+                    voiceId = voice.voiceId.trim(),
+                    speed = voice.speed.coerceIn(0.5f, 2.0f),
+                    language = voice.language.trim().ifBlank { "en" },
+                ),
+            )
+        }
+
     fun encryptApiKey(plainText: String): String = cipher.encrypt(plainText)
 
     /**
@@ -65,6 +82,11 @@ class SettingsRepository(
     fun decryptApiKey(provider: ProviderSettings): String {
         if (!provider.hasSavedKey) return ""
         return cipher.decrypt(provider.encryptedApiKey)
+    }
+
+    fun decryptVoiceApiKey(voice: VoiceSettings): String {
+        if (!voice.hasSavedKey) return ""
+        return cipher.decrypt(voice.encryptedApiKey)
     }
 
     private fun decode(raw: String?): AppSettings {

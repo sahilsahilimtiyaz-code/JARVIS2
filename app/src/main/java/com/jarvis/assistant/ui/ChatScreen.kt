@@ -1,5 +1,8 @@
 package com.jarvis.assistant.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.Manifest
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -29,6 +32,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -53,11 +57,28 @@ fun ChatScreen(
     onInputChange: (String) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
+    onToggleListening: () -> Unit,
     onOpenSettings: () -> Unit,
     onDismissError: () -> Unit,
     onRetry: () -> Unit,
 ) {
     val listState = rememberLazyListState()
+
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val hasMicPermission = androidx.core.content.ContextCompat.checkSelfPermission(
+        context,
+        android.Manifest.permission.RECORD_AUDIO,
+    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            onToggleListening()
+        } else {
+            // no-op; ViewModel surfaces error if called without permission
+        }
+    }
 
     LaunchedEffect(
         state.messages.size,
@@ -90,7 +111,12 @@ fun ChatScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 JarvisOrb(
-                    state = if (state.generating) OrbState.THINKING else OrbState.IDLE,
+                    state = when {
+                        state.generating -> OrbState.THINKING
+                        state.listening -> OrbState.LISTENING
+                        state.speaking -> OrbState.SPEAKING
+                        else -> OrbState.IDLE
+                    },
                     modifier = Modifier.size(132.dp),
                 )
                 Spacer(Modifier.height(4.dp))
@@ -154,6 +180,13 @@ fun ChatScreen(
                 onInputChange = onInputChange,
                 onSend = onSend,
                 onStop = onStop,
+                onToggleListening = {
+                    if (hasMicPermission) {
+                        onToggleListening()
+                    } else {
+                        micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+                    }
+                },
             )
         }
     }
@@ -400,6 +433,7 @@ private fun Composer(
     onInputChange: (String) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
+    onToggleListening: () -> Unit,
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -428,6 +462,13 @@ private fun Composer(
                     Text("Stop")
                 }
             } else {
+                OutlinedButton(
+                    onClick = { onToggleListening() },
+                    enabled = !state.listening || true,
+                ) {
+                    Text(if (state.listening) "Stop mic" else "Mic")
+                }
+                Spacer(Modifier.size(8.dp))
                 Button(
                     onClick = onSend,
                     enabled = state.input.isNotBlank(),

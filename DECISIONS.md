@@ -35,6 +35,15 @@
 - Phase 1 keeps conversation history in the UI layer for the current turn; Room-backed conversations and messages arrive with Phase 4 memory.
 - The greeting is generated locally by `GreetingEngine` and stored through the persona settings; spoken TTS arrives in Phase 2.
 
+## 2026-10-30 — Phase 2 implementation
+
+- Voice settings are stored in the existing encrypted DataStore document; the cloud voice API key uses the same Android Keystore AES-GCM cipher as provider keys.
+- Fish Audio and ElevenLabs synthesize PCM (`pcm` at 24 kHz and `pcm_24000`) and play it through `AudioTrack`; this avoids MP3 container parsing and keeps latency low.
+- Fish Audio uses the `s2.1-pro` model header; ElevenLabs uses `eleven_flash_v2_5`, its lowest-latency multilingual model.
+- Android system TTS is the fallback and is also the default provider when no cloud key is configured.
+- Barge-in uses an `AudioRecord` energy detector with `AcousticEchoCanceler` where available; detected speech interrupts the active utterance and starts speech recognition.
+- Speech is queued sentence by sentence so playback can begin after the first complete sentence while the model streams.
+
 ## 2026-10-30 — GitHub access deferred by the owner
 
 - The coding environment initially had no pre-existing GitHub authentication, no `gh`, and no local Java/Gradle/Android SDK; a local JDK 17, Gradle 9.6.0 and Android SDK platform 37 were provisioned later for compile checks.

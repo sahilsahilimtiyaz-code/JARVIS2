@@ -50,6 +50,7 @@ fun JarvisApp(vm: JarvisViewModel = viewModel()) {
             onInputChange = vm::onInputChange,
             onSend = vm::send,
             onStop = vm::stop,
+            onToggleListening = vm::toggleListening,
             onOpenSettings = vm::openSettings,
             onDismissError = vm::dismissError,
             onRetry = vm::retryLast,

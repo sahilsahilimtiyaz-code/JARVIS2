@@ -1,8 +1,26 @@
 package com.jarvis.assistant.ui
 
 import android.app.Application
+import android.content.Context
+import android.content.pm.PackageManager
+import android.media.AudioManager
+import android.speech.tts.TextToSpeech
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.jarvis.assistant.voice.AndroidSttEngine
+import com.jarvis.assistant.voice.AudioPlayer
+import com.jarvis.assistant.voice.BargeInDetector
+import com.jarvis.assistant.voice.ElevenLabsTtsEngine
+import com.jarvis.assistant.voice.FishAudioTtsEngine
+import com.jarvis.assistant.voice.SttEvent
+import com.jarvis.assistant.voice.SystemTtsEngine
+import com.jarvis.assistant.voice.TtsConfig
+import com.jarvis.assistant.settings.VoiceProvider
+import java.util.Locale
+import java.util.UUID
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ChannelResult
 import com.jarvis.assistant.brain.AgentEvent
 import com.jarvis.assistant.brain.AgentLoop
 import com.jarvis.assistant.brain.AgentRequest
@@ -19,11 +37,10 @@ import com.jarvis.assistant.settings.AppSettings
 import com.jarvis.assistant.settings.OwnerProfile
 import com.jarvis.assistant.settings.PersonaSettings
 import com.jarvis.assistant.settings.ProviderSettings
+import com.jarvis.assistant.settings.VoiceSettings
 import com.jarvis.assistant.settings.SettingsRepository
 import com.jarvis.assistant.tools.ToolRegistry
 import java.net.URI
-import java.util.Locale
-import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -45,6 +62,20 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     private val providerTester = ProviderTester(providerRegistry)
     private val agentLoop = AgentLoop(providerRegistry, toolRegistry)
 
+    private val audioPlayer = AudioPlayer(appContext)
+    private val sttEngine = AndroidSttEngine(appContext)
+    private val systemTtsEngine = SystemTtsEngine(appContext)
+    private val fishTtsEngine = FishAudioTtsEngine(HttpClientFactory.create())
+    private val elevenTtsEngine = ElevenLabsTtsEngine(HttpClientFactory.create())
+    private val bargeInDetector = BargeInDetector(appContext)
+
+    private var sttJob: kotlinx.coroutines.Job? = null
+    private val ttsChannel = Channel<String>(Channel.UNLIMITED)
+    private var ttsConsumerJob: kotlinx.coroutines.Job? = null
+    private var currentSpeakJob: kotlinx.coroutines.Job? = null
+    private var ttsGeneration = 0
+    private val ttsBuffer = StringBuilder()
+
     private val _ui = MutableStateFlow(JarvisUiState())
     val ui: StateFlow<JarvisUiState> = _ui.asStateFlow()
 
@@ -53,6 +84,19 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     private var nextMessageNumber = 0L
 
     init {
+        ttsConsumerJob = viewModelScope.launch {
+            for (sentence in ttsChannel) {
+                if (sentence.isBlank()) continue
+                val generation = ttsGeneration
+                currentSpeakJob = launch {
+                    if (generation == ttsGeneration) {
+                        speakOne(sentence)
+                    }
+                }
+                currentSpeakJob?.join()
+            }
+        }
+
         viewModelScope.launch {
             val prompt = withContext(Dispatchers.IO) { personaBuilder.defaultPrompt() }
             _ui.update { it.copy(defaultPersonaPrompt = prompt) }
@@ -82,10 +126,13 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         _ui.update { it.copy(input = value) }
     }
 
-    fun send() {
+    fun send(textOverride: String? = null) {
         val snapshot = _ui.value
-        val text = snapshot.input.trim()
+        val text = (textOverride ?: snapshot.input).trim()
         if (text.isEmpty() || snapshot.generating) return
+
+        ttsBuffer.setLength(0)
+        interruptSpeech()
 
         val userMessage = ChatMessageUi(
             id = newMessageId(),
@@ -116,6 +163,8 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 messages = state.messages + userMessage + assistantMessage,
                 input = "",
                 generating = true,
+                listening = false,
+                speaking = false,
                 activeProvider = null,
                 toolActivity = null,
                 error = null,
@@ -164,6 +213,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         } else {
             _ui.update { it.copy(generating = false, toolActivity = null) }
         }
+        interruptSpeech()
     }
 
     fun retryLast() {
@@ -489,6 +539,8 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     private fun handleAgentEvent(assistantId: String, event: AgentEvent) {
         when (event) {
             is AgentEvent.TextDelta -> {
+                ttsBuffer.append(event.text)
+                queueCompletedSentences()
                 _ui.update { state ->
                     state.copy(
                         messages = state.messages.map { message ->
@@ -546,6 +598,10 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
             }
 
             is AgentEvent.Completed -> {
+                if (ttsBuffer.isNotBlank()) {
+                    ttsChannel.trySend(ttsBuffer.toString().trim())
+                    ttsBuffer.setLength(0)
+                }
                 _ui.update { state ->
                     state.copy(
                         messages = state.messages.map { message ->
@@ -594,6 +650,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 error = message,
             )
         }
+        interruptSpeech()
     }
 
     private fun markStopped(assistantId: String) {
@@ -609,6 +666,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 toolActivity = null,
             )
         }
+        interruptSpeech()
     }
 
     private fun addGreeting(settings: AppSettings) {
@@ -635,6 +693,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 }
             }
         }
+        speakText(greeting.text)
     }
 
     private suspend fun resolveProviders(settings: AppSettings): List<ProviderConfig> =
@@ -728,9 +787,184 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         return "message_$nextMessageNumber"
     }
 
+    fun startListening() {
+        if (_ui.value.generating) return
+        _ui.update { it.copy(listening = true, error = null) }
+        interruptSpeech()
+        sttJob?.cancel()
+        sttJob = viewModelScope.launch(Dispatchers.Main) {
+            val locale = runCatching { Locale.forLanguageTag(_ui.value.settings.voice.language) }
+                .getOrDefault(Locale.US)
+            sttEngine.listen(locale).collect { event ->
+                when (event) {
+                    is SttEvent.Partial -> Unit
+                    is SttEvent.Final -> {
+                        _ui.update { it.copy(listening = false) }
+                        if (event.text.isNotBlank()) {
+                            send(event.text)
+                        }
+                    }
+                    is SttEvent.Error -> {
+                        _ui.update { it.copy(listening = false, error = event.message) }
+                    }
+                    SttEvent.End -> {
+                        _ui.update { it.copy(listening = false) }
+                    }
+                }
+            }
+            _ui.update { it.copy(listening = false) }
+        }
+    }
+
+    fun toggleListening() {
+        if (_ui.value.listening) stopListening() else startListening()
+    }
+
+    fun stopListening() {
+        sttJob?.cancel()
+        sttJob = null
+        _ui.update { it.copy(listening = false) }
+    }
+
+    fun speakText(text: String) {
+        if (text.isBlank()) return
+        ttsBuffer.setLength(0)
+        ttsChannel.trySend(text.trim())
+    }
+
+    private suspend fun speakOne(sentence: String) {
+        if (sentence.isBlank()) return
+        _ui.update { it.copy(speaking = true) }
+        val config = ttsConfig()
+        val engine = when (config.provider) {
+            VoiceProvider.FISH_AUDIO -> fishTtsEngine
+            VoiceProvider.ELEVENLABS -> elevenTtsEngine
+            VoiceProvider.SYSTEM -> systemTtsEngine
+        }
+        val fallbackEngine = if (config.provider != VoiceProvider.SYSTEM) systemTtsEngine else null
+        var ok = false
+        bargeInDetector.start {
+            interruptSpeech()
+            startListening()
+        }
+        try {
+            try {
+                ok = engine.speak(sentence, config, audioPlayer)
+            } catch (e: Exception) {
+                ok = false
+            }
+            if (!ok && config.fallbackToSystem && fallbackEngine != null) {
+                runCatching { fallbackEngine.speak(sentence, config.copy(provider = VoiceProvider.SYSTEM), audioPlayer) }
+            }
+        } finally {
+            bargeInDetector.stop()
+            _ui.update { it.copy(speaking = false) }
+        }
+    }
+
+    private fun ttsConfig(): TtsConfig {
+        val voice = _ui.value.settings.voice
+        val key = runCatching { settingsRepository.decryptVoiceApiKey(voice) }.getOrDefault("")
+        return TtsConfig(
+            provider = voice.provider,
+            apiKey = key,
+            voiceId = voice.voiceId,
+            speed = voice.speed,
+            fallbackToSystem = voice.fallbackToSystem,
+            language = voice.language,
+        )
+    }
+
+    private fun interruptSpeech() {
+        ttsGeneration++
+        currentSpeakJob?.cancel()
+        currentSpeakJob = null
+        runCatching {
+            while (true) {
+                val result = ttsChannel.tryReceive()
+                if (!result.isSuccess) break
+            }
+        }
+        audioPlayer.stop()
+        systemTtsEngine.stop()
+        bargeInDetector.stop()
+        _ui.update { it.copy(speaking = false) }
+        abandonAudioFocus()
+    }
+
+    private fun queueCompletedSentences() {
+        val regex = Regex("""[^.!?]*[.!?]""")
+        val text = ttsBuffer.toString()
+        val matches = regex.findAll(text).toList()
+        if (matches.isEmpty()) return
+        val consumed = matches.last().range.last + 1
+        matches.forEach { match ->
+            val sentence = match.value.trim()
+            if (sentence.isNotBlank()) ttsChannel.trySend(sentence)
+        }
+        ttsBuffer.delete(0, consumed)
+    }
+
+    private fun requestAudioFocus(): Boolean {
+        val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val focusRequest = android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+            .setAudioAttributes(
+                android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_ASSISTANT)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build(),
+            )
+            .setOnAudioFocusChangeListener { }
+            .build()
+        return audioManager.requestAudioFocus(focusRequest) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+    }
+
+    private fun abandonAudioFocus() {
+        val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        runCatching { audioManager.abandonAudioFocusRequest(
+            android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK).build(),
+        ) }
+    }
+
+    fun saveVoiceSettings(
+        provider: VoiceProvider,
+        voiceId: String,
+        speed: Float,
+        fallbackToSystem: Boolean,
+        language: String,
+        apiKey: String,
+    ) {
+        viewModelScope.launch {
+            try {
+                settingsRepository.saveVoice(
+                    VoiceSettings(
+                        provider = provider,
+                        voiceId = voiceId,
+                        speed = speed,
+                        fallbackToSystem = fallbackToSystem,
+                        language = language,
+                    ),
+                    apiKey,
+                )
+                setNotice("Voice settings saved.")
+            } catch (e: Exception) {
+                setError(e.message?.take(400) ?: "Could not save voice settings.")
+            }
+        }
+    }
+
+    fun testVoice() {
+        viewModelScope.launch {
+            speakText("Hello. I am Jarvis, and my voice is now configured.")
+        }
+    }
+
     override fun onCleared() {
         sendJob?.cancel()
         sendJob = null
+        ttsConsumerJob?.cancel()
+        interruptSpeech()
+        systemTtsEngine.shutdown()
         super.onCleared()
     }
 

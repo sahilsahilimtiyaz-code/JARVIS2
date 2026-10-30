@@ -39,6 +39,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -63,6 +64,8 @@ import com.jarvis.assistant.brain.ProviderKind
 import com.jarvis.assistant.settings.OwnerProfile
 import com.jarvis.assistant.settings.ProviderPreset
 import com.jarvis.assistant.settings.ProviderSettings
+import com.jarvis.assistant.settings.VoiceProvider
+import com.jarvis.assistant.settings.VoiceSettings
 import com.jarvis.assistant.settings.defaultPresetFor
 import com.jarvis.assistant.settings.presetsFor
 
@@ -172,6 +175,13 @@ fun SettingsScreen(
                 }
                 item {
                     PersonaEditor(state = state, viewModel = viewModel)
+                }
+
+                item {
+                    SectionTitle("Voice")
+                }
+                item {
+                    VoiceSettingsCard(state = state, viewModel = viewModel)
                 }
 
                 item {
@@ -841,6 +851,114 @@ private fun AddProviderDialog(
             }
         },
     )
+}
+
+@Composable
+private fun VoiceSettingsCard(
+    state: JarvisUiState,
+    viewModel: JarvisViewModel,
+) {
+    val voice = state.settings.voice
+    var provider by remember(voice.provider) { mutableStateOf(voice.provider) }
+    var voiceId by remember(voice.voiceId) { mutableStateOf(voice.voiceId) }
+    var apiKey by remember(voice.hasSavedKey) { mutableStateOf("") }
+    var speed by remember(voice.speed) { mutableStateOf(voice.speed) }
+    var fallback by remember(voice.fallbackToSystem) { mutableStateOf(voice.fallbackToSystem) }
+    var language by remember(voice.language) { mutableStateOf(voice.language) }
+    var revealKey by remember { mutableStateOf(false) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.32f)),
+        shape = RoundedCornerShape(18.dp),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("Voice", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+            Text(
+                "Choose the voice Jarvis uses. Fish Audio and ElevenLabs stream PCM audio; system voice is the fallback.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(VoiceProvider.entries.toList(), key = { it.name }) { option ->
+                    FilterChip(
+                        selected = provider == option,
+                        onClick = { provider = option },
+                        label = { Text(option.label) },
+                    )
+                }
+            }
+
+            if (provider != VoiceProvider.SYSTEM) {
+                OutlinedTextField(
+                    value = apiKey,
+                    onValueChange = { apiKey = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(if (voice.hasSavedKey) "API key (saved)" else "API key") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    visualTransformation = if (revealKey) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        TextButton(onClick = { revealKey = !revealKey }) {
+                            Text(if (revealKey) "Hide" else "Show", style = MaterialTheme.typography.labelSmall)
+                        }
+                    },
+                )
+                if (voice.hasSavedKey) {
+                    Text("A key is saved. Leave blank to keep it.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                }
+            }
+
+            OutlinedTextField(
+                value = voiceId,
+                onValueChange = { voiceId = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text(if (provider == VoiceProvider.FISH_AUDIO) "Fish voice reference id" else if (provider == VoiceProvider.ELEVENLABS) "ElevenLabs voice id" else "Voice id") },
+                singleLine = true,
+                shape = RoundedCornerShape(14.dp),
+            )
+
+            OutlinedTextField(
+                value = language,
+                onValueChange = { language = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Language tag") },
+                placeholder = { Text("en") },
+                singleLine = true,
+                shape = RoundedCornerShape(14.dp),
+            )
+
+            Column {
+                Text("Speed: ${"%.2f".format(speed)}", style = MaterialTheme.typography.labelSmall)
+                Slider(value = speed, onValueChange = { speed = it }, valueRange = 0.5f..2.0f)
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(checked = fallback, onCheckedChange = { fallback = it })
+                Spacer(Modifier.width(8.dp))
+                Text("Fall back to system voice", style = MaterialTheme.typography.bodySmall)
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = {
+                    viewModel.saveVoiceSettings(
+                        provider = provider,
+                        voiceId = voiceId,
+                        speed = speed,
+                        fallbackToSystem = fallback,
+                        language = language,
+                        apiKey = apiKey,
+                    )
+                }) { Text("Save voice") }
+                TextButton(onClick = { viewModel.testVoice() }) { Text("Test voice") }
+            }
+        }
+    }
 }
 
 @Composable

@@ -32,7 +32,14 @@
 
 ## Phase 2 — Voice
 
-- [ ] Not started.
+- [x] Add `SttEngine` interface and Android speech recognizer implementation.
+- [x] Add `TtsEngine` interface and Fish Audio PCM streaming implementation.
+- [x] Add ElevenLabs streaming PCM implementation with Flash model.
+- [x] Add Android system TTS fallback.
+- [x] Add audio playback, audio focus, barge-in detection and sentence queueing.
+- [x] Add microphone permission flow and voice settings screen.
+- [x] Speak launch greeting and interrupt speech on Stop or detected speech.
+- [x] Green local build and unit tests.
 
 ## Phase 3 — Tier 1 phone tools
 
