@@ -75,7 +75,7 @@ class ElevenLabsTtsEngine(private val client: OkHttpClient) : TtsEngine {
             throw e
         } catch (e: Exception) {
             call.cancel()
-            lastError = e.message ?: "ElevenLabs network or playback error."
+            lastError = "${e::class.simpleName}: ${e.message ?: "unknown error"}"
             false
         } finally {
             call.cancel()
