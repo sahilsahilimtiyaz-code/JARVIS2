@@ -26,6 +26,10 @@
 - Debug builds do not use an `applicationIdSuffix`, so a debug APK can update the installed app without changing its application ID.
 - `android:allowBackup="false"` is set because an Android cloud backup would restore encrypted preference blobs without the hardware-backed Keystore key, causing undecryptable settings. Jarvis will provide explicit JSON export/import later.
 
-## 2026-10-30 — GitHub access
+## 2026-10-30 — GitHub access deferred by the owner
 
-- The coding environment has no pre-existing GitHub authentication, no `gh`, and no local Java/Gradle/Android SDK. `gh` was installed from its official arm64 release so the owner could authorize once with GitHub's device flow. The repository is private.
+- The coding environment has no pre-existing GitHub authentication, no `gh`, and no local Java/Gradle/Android SDK.
+- The owner explicitly directed that GitHub setup, repository creation, pushing and cloud builds be deferred until the full app is complete. The pending device-login process was stopped; no GitHub repository was created and nothing was pushed.
+- Consequence: no APK is produced and no phase can be installed or tested on the phone until GitHub Actions is enabled at the end. Compile errors will accumulate until the first CI run. The source will still be written to the documented stable versions and kept as build-ready as possible.
+- The workflows and phone-only signing instructions remain in `.github/workflows/` and `README.md`, ready to use when the owner chooses to publish the repository.
+- All work is confined to `/sdcard/JARVIS2`. The earlier `/sdcard/JARVIS` project and the Brahma AI prototype were read once for context, then left untouched.

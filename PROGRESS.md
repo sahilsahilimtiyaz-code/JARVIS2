@@ -9,10 +9,12 @@
 - [x] Add phone-only signing setup and test instructions to `README.md`.
 - [x] Configure CI signing from four repository secrets, with a secure fallback for the bootstrap build.
 - [x] Initialize a fresh Git repository in `/sdcard/JARVIS2` and commit Phase 0.
-- [ ] Push to GitHub and get the first green **Build Jarvis APK** run.
-- [ ] Owner adds the four signing secrets and downloads the signed APK.
-- [ ] Install the signed APK on the Galaxy A54 and verify **Jarvis online**.
-- [ ] Install a second signed build over the first and confirm data is preserved.
+- [ ] Push to GitHub and get the first green **Build Jarvis APK** run. **Deferred by the owner until the full app is complete.**
+- [ ] Owner adds the four signing secrets and downloads the signed APK. Deferred with the GitHub setup.
+- [ ] Install the signed APK on the Galaxy A54 and verify **Jarvis online**. Deferred until the first cloud build.
+- [ ] Install a second signed build over the first and confirm data is preserved. Deferred until the first cloud build.
+
+**Note:** no APK or build log exists yet. This environment has no local Java, Gradle or Android SDK, so the first compile check will happen when GitHub Actions is enabled at the end. The source will be kept build-ready in the meantime.
 
 ## Phase 1 — Brain, chat, persona
 

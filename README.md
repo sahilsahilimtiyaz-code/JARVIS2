@@ -2,13 +2,13 @@
 
 Jarvis is a private, native Kotlin personal assistant for Android 14+ (minSdk 31). It is designed to be sideloaded onto its owner's Samsung Galaxy A54, never published on Google Play.
 
-This is **Phase 0**: the app opens to a dark Compose screen saying **Jarvis online**, and GitHub Actions builds and uploads a debug APK. No API keys or other secrets are in the repository or in `BuildConfig`.
+This is **Phase 0**: the app opens to a dark Compose screen saying **Jarvis online**. No API keys or other secrets are in the repository or in `BuildConfig`.
 
-Repository: <https://github.com/sahilsahilimtiyaz-code/Jarvis-Android>
+**Current status:** the source and the GitHub Actions workflows are complete locally. The owner has chosen to defer creating the GitHub repository and running the cloud build until the app is complete, so no APK artifact exists yet. The steps below are ready for when that happens.
 
 ## Set up the permanent signing key first
 
-Do this **before installing the first APK**. It keeps every future build signed with the same key, so Android updates Jarvis in place instead of forcing an uninstall that wipes his data.
+Do this **before installing the first APK**, once the repository exists. It keeps every future build signed with the same key, so Android updates Jarvis in place instead of forcing an uninstall that wipes his data.
 
 1. Open the repository in your phone browser and tap **Actions**.
 2. In the left-hand workflow list, tap **Generate Jarvis signing keystore**.
