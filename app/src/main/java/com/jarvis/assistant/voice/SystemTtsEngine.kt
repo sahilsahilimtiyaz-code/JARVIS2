@@ -14,7 +14,6 @@ import kotlin.coroutines.resume
 
 class SystemTtsEngine(context: Context) : TtsEngine {
     override var lastError: String? = null
-        private set
     private val appContext = context.applicationContext
     private var tts: TextToSpeech? = null
     private val ready = CompletableDeferred<Boolean>()

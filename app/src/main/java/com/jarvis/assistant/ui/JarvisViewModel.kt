@@ -840,6 +840,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
             VoiceProvider.FISH_AUDIO -> fishTtsEngine
             VoiceProvider.ELEVENLABS -> elevenTtsEngine
             VoiceProvider.SYSTEM -> systemTtsEngine
+            else -> systemTtsEngine
         }
         val fallbackEngine = if (config.provider != VoiceProvider.SYSTEM) systemTtsEngine else null
         var ok = false

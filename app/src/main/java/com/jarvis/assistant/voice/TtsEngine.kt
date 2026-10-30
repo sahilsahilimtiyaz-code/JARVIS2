@@ -1,8 +1,15 @@
 package com.jarvis.assistant.voice
 
-import com.jarvis.assistant.settings.VoiceProvider
-
+import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
+import com.jarvis.assistant.settings.VoiceProvider
 
 data class TtsConfig(
     val provider: VoiceProvider,
@@ -19,64 +26,103 @@ data class TtsAudioChunk(
 )
 
 interface TtsEngine {
-    val lastError: String?
+    var lastError: String?
     suspend fun speak(text: String, config: TtsConfig, player: AudioPlayer): Boolean
 }
 
-class AudioPlayer(private val context: android.content.Context) {
-    private var audioTrack: android.media.AudioTrack? = null
-    private var currentJob: kotlinx.coroutines.Job? = null
+class AudioPlayer(private val context: Context) {
+    private var audioTrack: AudioTrack? = null
+    private var isStopped = false
 
     suspend fun playPcm(chunks: Flow<TtsAudioChunk>, sampleRate: Int): Boolean =
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            val minBuffer = android.media.AudioTrack.getMinBufferSize(
+        withContext(Dispatchers.IO) {
+            val minBuffer = AudioTrack.getMinBufferSize(
                 sampleRate,
-                android.media.AudioFormat.CHANNEL_OUT_MONO,
-                android.media.AudioFormat.ENCODING_PCM_16BIT,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
             ).coerceAtLeast(sampleRate)
-            val track = android.media.AudioTrack.Builder()
+            val track = AudioTrack.Builder()
                 .setAudioAttributes(
-                    android.media.AudioAttributes.Builder()
-                        .setUsage(android.media.AudioAttributes.USAGE_ASSISTANT)
-                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build(),
                 )
                 .setAudioFormat(
-                    android.media.AudioFormat.Builder()
+                    AudioFormat.Builder()
                         .setSampleRate(sampleRate)
-                        .setEncoding(android.media.AudioFormat.ENCODING_PCM_16BIT)
-                        .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_MONO)
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                         .build(),
                 )
                 .setBufferSizeInBytes(minBuffer * 2)
-                .setTransferMode(android.media.AudioTrack.MODE_STREAM)
+                .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
 
-            audioTrack = track
+            synchronized(this) {
+                if (isStopped) {
+                    track.release()
+                    return@withContext false
+                }
+                audioTrack = track
+                isStopped = false
+            }
             track.play()
-            return@withContext try {
+            var completed = true
+            try {
                 chunks.collect { chunk ->
+                    synchronized(this) {
+                        if (isStopped || audioTrack !== track) {
+                            completed = false
+                            return@collect
+                        }
+                    }
                     var offset = 0
                     while (offset < chunk.pcm.size) {
+                        synchronized(this) {
+                            if (isStopped || audioTrack !== track) {
+                                completed = false
+                                return@collect
+                            }
+                        }
                         val written = track.write(chunk.pcm, offset, chunk.pcm.size - offset)
                         if (written <= 0) break
                         offset += written
                     }
                 }
-                track.stop()
-                true
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                track.stop()
+                synchronized(this) {
+                    if (isStopped || audioTrack !== track) {
+                        completed = false
+                    }
+                }
+                if (completed) track.stop()
+                completed
+            } catch (e: CancellationException) {
+                synchronized(this) {
+                    if (!isStopped && audioTrack === track) {
+                        runCatching { track.stop() }
+                    }
+                }
                 throw e
+            } catch (e: IllegalStateException) {
+                false
             } finally {
-                track.release()
-                if (audioTrack === track) audioTrack = null
+                synchronized(this) {
+                    if (audioTrack === track) {
+                        runCatching { track.release() }
+                        audioTrack = null
+                        isStopped = true
+                    }
+                }
             }
         }
 
     fun stop() {
-        audioTrack?.runCatching { stop() }
-        audioTrack?.release()
-        audioTrack = null
+        synchronized(this) {
+            isStopped = true
+            audioTrack?.runCatching { stop() }
+            audioTrack?.runCatching { release() }
+            audioTrack = null
+        }
     }
 }

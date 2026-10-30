@@ -15,7 +15,6 @@ import org.json.JSONObject
 
 class ElevenLabsTtsEngine(private val client: OkHttpClient) : TtsEngine {
     override var lastError: String? = null
-        private set
 
     override suspend fun speak(text: String, config: TtsConfig, player: AudioPlayer): Boolean {
         lastError = null
