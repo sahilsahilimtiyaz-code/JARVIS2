@@ -1,11 +1,7 @@
 package com.jarvis.assistant.voice
 
-import java.io.IOException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -16,25 +12,29 @@ import org.json.JSONObject
 class FishAudioTtsEngine(private val client: OkHttpClient) : TtsEngine {
     override var lastError: String? = null
 
-    override suspend fun speak(text: String, config: TtsConfig, player: AudioPlayer): Boolean {
+    override suspend fun synthesize(text: String, config: TtsConfig): SpeechPayload? {
         lastError = null
         if (config.apiKey.isBlank() || config.voiceId.isBlank()) {
             lastError = "Fish Audio needs an API key and voice reference id."
-            return false
+            return null
         }
         val payload = JSONObject().apply {
             put("text", text)
             put("reference_id", config.voiceId)
             put("format", "pcm")
-            put("sample_rate", 24000)
+            put("sample_rate", PCM_SAMPLE_RATE)
             put("latency", "balanced")
             put("normalize", true)
+            put(
+                "prosody",
+                JSONObject().put("speed", config.speed.toDouble()),
+            )
         }
         val request = Request.Builder()
             .url("https://api.fish.audio/v1/tts")
             .header("Authorization", "Bearer ${config.apiKey}")
             .header("Content-Type", "application/json")
-            .header("model", "s2.1-pro-free")
+            .header("model", MODEL)
             .post(payload.toString().toRequestBody(JSON_MEDIA))
             .build()
 
@@ -43,28 +43,16 @@ class FishAudioTtsEngine(private val client: OkHttpClient) : TtsEngine {
             withContext(Dispatchers.IO) {
                 call.execute().use { response ->
                     if (!response.isSuccessful) {
-                        lastError = "Fish Audio returned HTTP ${response.code}: ${response.body?.string()?.take(200).orEmpty()}"
-                        return@withContext false
+                        lastError = "Fish Audio returned HTTP ${response.code}: " +
+                            response.body?.string()?.take(200).orEmpty()
+                        return@withContext null
                     }
-                    val body = response.body
-                    if (body == null) {
+                    val bytes = response.body?.bytes()
+                    if (bytes == null || bytes.isEmpty()) {
                         lastError = "Fish Audio returned an empty response."
-                        return@withContext false
+                        return@withContext null
                     }
-                    val chunks: Flow<TtsAudioChunk> = flow {
-                        val source = body.source()
-                        val buffer = ByteArray(8192)
-                        while (true) {
-                            val read = source.read(buffer)
-                            if (read == -1) break
-                            emit(TtsAudioChunk(buffer.copyOf(read), 24000))
-                        }
-                    }.flowOn(Dispatchers.IO)
-                    val played = player.playPcm(chunks, 24000)
-                    if (!played) {
-                        lastError = "Fish Audio audio playback failed."
-                    }
-                    played
+                    SpeechPayload.Pcm(bytes, PCM_SAMPLE_RATE)
                 }
             }
         } catch (e: CancellationException) {
@@ -73,13 +61,13 @@ class FishAudioTtsEngine(private val client: OkHttpClient) : TtsEngine {
         } catch (e: Exception) {
             call.cancel()
             lastError = "${e::class.simpleName}: ${e.message ?: "unknown error"}"
-            false
-        } finally {
-            call.cancel()
+            null
         }
     }
 
     private companion object {
+        const val PCM_SAMPLE_RATE = 24000
+        const val MODEL = "s2.1-pro-free"
         val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
     }
 }

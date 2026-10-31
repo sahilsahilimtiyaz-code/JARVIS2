@@ -944,6 +944,15 @@ private fun VoiceSettingsCard(
                 Text("Fall back to system voice", style = MaterialTheme.typography.bodySmall)
             }
 
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(checked = voice.continuousListening, onCheckedChange = { continuousListening = it })
+                Spacer(Modifier.width(8.dp))
+                Column {
+                    Text("Continuous microphone", style = MaterialTheme.typography.bodySmall)
+                    Text("Keep listening even when not speaking", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = {
                     viewModel.saveVoiceSettings(
@@ -953,6 +962,7 @@ private fun VoiceSettingsCard(
                         fallbackToSystem = fallback,
                         language = language,
                         apiKey = apiKey,
+                        continuousListening = continuousListening,
                     )
                 }) { Text("Save voice") }
                 TextButton(onClick = { viewModel.testVoice() }) { Text("Test voice") }

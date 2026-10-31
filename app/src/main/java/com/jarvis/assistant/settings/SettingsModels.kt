@@ -46,6 +46,7 @@ data class VoiceSettings(
     val speed: Float = 1.0f,
     val fallbackToSystem: Boolean = true,
     val language: String = "en",
+    val continuousListening: Boolean = true,
 ) {
     val hasSavedKey: Boolean get() = encryptedApiKey.isNotBlank()
 }

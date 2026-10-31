@@ -1,7 +1,6 @@
 package com.jarvis.assistant.voice
 
 import android.content.Context
-import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import java.util.Locale
@@ -12,63 +11,115 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 
+/**
+ * Fallback voice built on the Android system text-to-speech engine.
+ *
+ * [synthesize] never speaks; it hands the text back to the caller so the shared
+ * [AudioPlayer] pipeline decides when to play it. [speak] does the actual
+ * playback and suspends until the utterance finishes or is cancelled.
+ */
 class SystemTtsEngine(context: Context) : TtsEngine {
     override var lastError: String? = null
     private val appContext = context.applicationContext
-    private var tts: TextToSpeech? = null
-    private val ready = CompletableDeferred<Boolean>()
+
+    private var engine: TextToSpeech? = null
+    private var ready = CompletableDeferred<Boolean>()
 
     init {
-        tts = TextToSpeech(appContext) { status ->
+        createEngine()
+    }
+
+    private fun createEngine() {
+        ready = CompletableDeferred()
+        engine = TextToSpeech(appContext) { status ->
             ready.complete(status == TextToSpeech.SUCCESS)
         }
     }
 
-    override suspend fun speak(text: String, config: TtsConfig, player: AudioPlayer): Boolean =
-        withContext(Dispatchers.Main) {
-            if (!ready.await()) {
-                lastError = "System TTS is not available on this phone."
-                return@withContext false
-            }
-            val engine = tts ?: run {
-                lastError = "System TTS is not available on this phone."
-                return@withContext false
-            }
-            engine.setSpeechRate(config.speed.coerceIn(0.5f, 2.0f))
-            val utteranceId = "jarvis_${UUID.randomUUID()}"
+    override suspend fun synthesize(text: String, config: TtsConfig): SpeechPayload? {
+        lastError = null
+        if (text.isBlank()) return null
+        if (!awaitReady()) {
+            lastError = "The system voice engine is not ready."
+            return null
+        }
+        return SpeechPayload.SystemText(text)
+    }
+
+    /** Speaks [text] through the system engine and suspends until it finishes. */
+    suspend fun speak(text: String, language: String = "en"): Boolean {
+        lastError = null
+        if (text.isBlank()) return true
+        if (!awaitReady()) {
+            lastError = "The system voice engine is not ready."
+            return false
+        }
+        val tts = engine ?: return false
+        val utteranceId = UUID.randomUUID().toString()
+
+        return withContext(Dispatchers.Main) {
             suspendCancellableCoroutine { continuation ->
-                engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                // The listener is installed before speak() so a fast utterance
+                // cannot complete before anyone is listening for it.
+                tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) = Unit
+
                     override fun onDone(utteranceId: String?) {
-                        if (!continuation.isCompleted) continuation.resume(true)
+                        if (continuation.isActive) continuation.resume(true)
                     }
-                    @Deprecated("Deprecated in Java")
+
                     override fun onError(utteranceId: String?) {
-                        lastError = "System TTS failed."
-                        if (!continuation.isCompleted) continuation.resume(false)
+                        if (continuation.isActive) continuation.resume(false)
                     }
+
+                    @Deprecated("Superseded by the 21+ overload", ReplaceWith("onError(id, code)"))
                     override fun onError(utteranceId: String?, errorCode: Int) {
-                        lastError = "System TTS failed with code $errorCode."
-                        if (!continuation.isCompleted) continuation.resume(false)
+                        lastError = "The system voice failed (code $errorCode)."
+                        if (continuation.isActive) continuation.resume(false)
                     }
                 })
-                val params = Bundle().apply {
-                    putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
+
+                val locale = runCatching { Locale.forLanguageTag(language) }
+                    .getOrDefault(Locale.getDefault())
+                runCatching {
+                    if (tts.isLanguageAvailable(locale) >= TextToSpeech.LANG_AVAILABLE) {
+                        tts.language = locale
+                    }
                 }
-                engine.speak(text, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
+
+                val started = runCatching {
+                    tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+                }.getOrDefault(TextToSpeech.ERROR)
+                if (started == TextToSpeech.ERROR) {
+                    lastError = "The system voice refused to speak."
+                    if (continuation.isActive) continuation.resume(false)
+                }
+
                 continuation.invokeOnCancellation {
-                    engine.stop()
+                    runCatching { tts.stop() }
                 }
             }
         }
-
-    fun stop() {
-        tts?.stop()
     }
 
+    /** Cuts off the current utterance. The engine stays usable afterwards. */
+    fun stop() {
+        runCatching { engine?.stop() }
+    }
+
+    /** Frees the engine. Only for permanent teardown. */
     fun shutdown() {
-        tts?.stop()
-        tts?.shutdown()
-        tts = null
+        runCatching { engine?.stop() }
+        runCatching { engine?.shutdown() }
+        engine = null
+    }
+
+    private suspend fun awaitReady(): Boolean {
+        val tts = engine ?: return false
+        val ok = ready.await()
+        if (!ok && engine === tts) {
+            lastError = "The system voice engine is not available."
+        }
+        return ok && engine != null
     }
 }

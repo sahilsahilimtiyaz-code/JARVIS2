@@ -2,25 +2,12 @@ package com.jarvis.assistant.ui
 
 import android.app.Application
 import android.content.Context
-import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioManager
-import android.speech.tts.TextToSpeech
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.jarvis.assistant.voice.AndroidSttEngine
-import com.jarvis.assistant.voice.AudioPlayer
-import com.jarvis.assistant.voice.BargeInDetector
-import com.jarvis.assistant.voice.ElevenLabsTtsEngine
-import com.jarvis.assistant.voice.FishAudioTtsEngine
-import com.jarvis.assistant.voice.SttEvent
-import com.jarvis.assistant.voice.SystemTtsEngine
-import com.jarvis.assistant.voice.TtsConfig
-import com.jarvis.assistant.settings.VoiceProvider
-import java.util.Locale
-import java.util.UUID
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.channels.ChannelResult
 import com.jarvis.assistant.brain.AgentEvent
 import com.jarvis.assistant.brain.AgentLoop
 import com.jarvis.assistant.brain.AgentRequest
@@ -37,19 +24,41 @@ import com.jarvis.assistant.settings.AppSettings
 import com.jarvis.assistant.settings.OwnerProfile
 import com.jarvis.assistant.settings.PersonaSettings
 import com.jarvis.assistant.settings.ProviderSettings
-import com.jarvis.assistant.settings.VoiceSettings
 import com.jarvis.assistant.settings.SettingsRepository
+import com.jarvis.assistant.settings.VoiceProvider
+import com.jarvis.assistant.settings.VoiceSettings
 import com.jarvis.assistant.tools.ToolRegistry
+import com.jarvis.assistant.voice.AndroidSttEngine
+import com.jarvis.assistant.voice.AudioPlayer
+import com.jarvis.assistant.voice.BargeInDetector
+import com.jarvis.assistant.voice.ElevenLabsTtsEngine
+import com.jarvis.assistant.voice.FishAudioTtsEngine
+import com.jarvis.assistant.voice.SpeechPayload
+import com.jarvis.assistant.voice.SttEvent
+import com.jarvis.assistant.voice.SystemTtsEngine
+import com.jarvis.assistant.voice.TtsConfig
 import java.net.URI
+import java.util.Locale
+import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.Mutex
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withLock
+
+/** One unit of speech to be synthesised and played in order. */
+sealed interface SpeechItem {
+    data class Sentence(val text: String) : SpeechItem
+    data object EndOfReply : SpeechItem
+}
 
 class JarvisViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -70,10 +79,9 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     private val bargeInDetector = BargeInDetector(appContext)
 
     private var sttJob: kotlinx.coroutines.Job? = null
-    private val ttsChannel = Channel<String>(Channel.UNLIMITED)
-    private var ttsConsumerJob: kotlinx.coroutines.Job? = null
-    private var currentSpeakJob: kotlinx.coroutines.Job? = null
-    private var ttsGeneration = 0
+    private val speechInbox = Channel<SpeechItem>(Channel.UNLIMITED)
+    private val speechOutbox = Channel<SpeechPayload>(Channel.UNLIMITED)
+    private var speechPipeline: kotlinx.coroutines.Job? = null
     private val ttsBuffer = StringBuilder()
 
     private val _ui = MutableStateFlow(JarvisUiState())
@@ -82,20 +90,10 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     private var sendJob: Job? = null
     private var greetingShown = false
     private var nextMessageNumber = 0L
+    private var speaking = false
 
     init {
-        ttsConsumerJob = viewModelScope.launch {
-            for (sentence in ttsChannel) {
-                if (sentence.isBlank()) continue
-                val generation = ttsGeneration
-                currentSpeakJob = launch {
-                    if (generation == ttsGeneration) {
-                        speakOne(sentence)
-                    }
-                }
-                currentSpeakJob?.join()
-            }
-        }
+        startSpeechPipeline()
 
         viewModelScope.launch {
             val prompt = withContext(Dispatchers.IO) { personaBuilder.defaultPrompt() }
@@ -120,6 +118,62 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                 }
             }
         }
+    }
+
+    /**
+     * Runs the speech producer and consumer for one reply.
+     *
+     * The producer starts synthesis as soon as a sentence arrives and the
+     * consumer plays payloads in order, so by the time sentence N finishes
+     * playing, sentence N+1 is usually already waiting. A mutex keeps the sends
+     * ordered even though several sentences are being synthesised at once.
+     */
+    private fun startSpeechPipeline() {
+        speechPipeline?.cancel()
+        val order = Mutex()
+        speechPipeline = viewModelScope.launch {
+            coroutineScope {
+                launch {
+                    for (item in speechInbox) {
+                        when (item) {
+                            is SpeechItem.Sentence -> launch {
+                                val config = ttsConfig()
+                                val engine = engineFor(config.provider)
+                                val payload = runCatching {
+                                    engine.synthesize(item.text, config)
+                                }.getOrNull().let { result ->
+                                    result ?: if (config.fallbackToSystem) {
+                                        SpeechPayload.SystemText(item.text)
+                                    } else {
+                                        null
+                                    }
+                                }
+                                if (payload != null) {
+                                    order.withLock { speechOutbox.send(payload) }
+                                } else {
+                                    engine.lastError?.let { reportSpeechError(it) }
+                                }
+                            }
+                            SpeechItem.EndOfReply -> {
+                                speechOutbox.send(SpeechPayload.EndOfReply)
+                                return@launch
+                            }
+                        }
+                    }
+                }
+                launch {
+                    for (payload in speechOutbox) {
+                        playPayload(payload)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun engineFor(provider: VoiceProvider): TtsEngine = when (provider) {
+        VoiceProvider.FISH_AUDIO -> fishTtsEngine
+        VoiceProvider.ELEVENLABS -> elevenTtsEngine
+        VoiceProvider.SYSTEM -> systemTtsEngine
     }
 
     fun onInputChange(value: String) {
@@ -599,9 +653,10 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
 
             is AgentEvent.Completed -> {
                 if (ttsBuffer.isNotBlank()) {
-                    ttsChannel.trySend(ttsBuffer.toString().trim())
+                    speechInbox.trySend(SpeechItem.Sentence(ttsBuffer.toString().trim()))
                     ttsBuffer.setLength(0)
                 }
+                speechInbox.trySend(SpeechItem.EndOfReply)
                 _ui.update { state ->
                     state.copy(
                         messages = state.messages.map { message ->
@@ -828,54 +883,24 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
 
     fun speakText(text: String) {
         if (text.isBlank()) return
-        ttsBuffer.setLength(0)
-        ttsChannel.trySend(text.trim())
+        if (!speaking) {
+            if (!requestAudioFocus()) {
+                // If we can't get audio focus, fall back to system TTS directly
+                _ui.update { it.copy(notice = "Could not get audio focus. Playing through system.") }
+            }
+            bargeInDetector.start { interruptSpeech() }
+            speaking = true
+            _ui.update { it.copy(speaking = true) }
+        }
+        speechInbox.trySend(SpeechItem.Sentence(text.trim()))
     }
 
     private suspend fun speakOne(sentence: String) {
         if (sentence.isBlank()) return
-        _ui.update { it.copy(speaking = true) }
-        val config = ttsConfig()
-        val engine = when (config.provider) {
-            VoiceProvider.FISH_AUDIO -> fishTtsEngine
-            VoiceProvider.ELEVENLABS -> elevenTtsEngine
-            VoiceProvider.SYSTEM -> systemTtsEngine
-            else -> systemTtsEngine
-        }
-        val fallbackEngine = if (config.provider != VoiceProvider.SYSTEM) systemTtsEngine else null
-        var ok = false
-        val hasMicPermission = ContextCompat.checkSelfPermission(
-            appContext,
-            android.Manifest.permission.RECORD_AUDIO,
-        ) == PackageManager.PERMISSION_GRANTED
-        if (hasMicPermission) {
-            bargeInDetector.start {
-                interruptSpeech()
-                startListening()
-            }
-        }
-        try {
-            try {
-                ok = engine.speak(sentence, config, audioPlayer)
-            } catch (e: Exception) {
-                ok = false
-                engine.lastError?.let { setError(it) }
-            }
-            if (!ok && config.fallbackToSystem && fallbackEngine != null) {
-                val fallbackOk = runCatching { fallbackEngine.speak(sentence, config.copy(provider = VoiceProvider.SYSTEM), audioPlayer) }.getOrDefault(false)
-                if (!fallbackOk) {
-                    setError(fallbackEngine.lastError ?: "Voice playback failed.")
-                }
-            } else if (!ok) {
-                setError(engine.lastError ?: "Voice playback failed.")
-            }
-        } finally {
-            if (hasMicPermission) bargeInDetector.stop()
-            _ui.update { it.copy(speaking = false) }
-        }
+        speechInbox.trySend(SpeechItem.Sentence(sentence.trim()))
     }
 
-    private fun ttsConfig(): TtsConfig {
+    private suspend fun ttsConfig(): TtsConfig {
         val voice = _ui.value.settings.voice
         val key = runCatching { settingsRepository.decryptVoiceApiKey(voice) }.getOrDefault("")
         return TtsConfig(
@@ -889,20 +914,44 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun interruptSpeech() {
-        ttsGeneration++
-        currentSpeakJob?.cancel()
-        currentSpeakJob = null
+        // Cancel the pipeline to stop both synthesis and playback
+        speechPipeline?.cancel()
+        // Drain the queues
         runCatching {
             while (true) {
-                val result = ttsChannel.tryReceive()
-                if (!result.isSuccess) break
+                speechInbox.tryReceive()
+            }
+        }
+        runCatching {
+            while (true) {
+                speechOutbox.tryReceive()
             }
         }
         audioPlayer.stop()
         systemTtsEngine.stop()
         bargeInDetector.stop()
+        speaking = false
         _ui.update { it.copy(speaking = false) }
         abandonAudioFocus()
+    }
+
+    private suspend fun playPayload(payload: SpeechPayload) {
+        when (payload) {
+            is SpeechPayload.Pcm -> {
+                audioPlayer.writePcm(payload.bytes, payload.sampleRate)
+            }
+            is SpeechPayload.SystemText -> {
+                audioPlayer.finish()
+                systemTtsEngine.speak(payload.text, _ui.value.settings.voice.language)
+            }
+            SpeechPayload.EndOfReply -> {
+                audioPlayer.finish()
+                _ui.update { it.copy(speaking = false) }
+                if (_ui.value.settings.voice.continuousListening) {
+                    startListening()
+                }
+            }
+        }
     }
 
     private fun queueCompletedSentences() {
@@ -913,9 +962,21 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         val consumed = matches.last().range.last + 1
         matches.forEach { match ->
             val sentence = match.value.trim()
-            if (sentence.isNotBlank()) ttsChannel.trySend(sentence)
+            if (sentence.isNotBlank()) {
+                speechInbox.trySend(SpeechItem.Sentence(sentence))
+            }
         }
         ttsBuffer.delete(0, consumed)
+    }
+
+    private fun reportSpeechError(message: String) {
+        val notice = "Voice error: $message"
+        _ui.update { it.copy(notice = notice) }
+        // Clear the notice after a few seconds
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(5000)
+            _ui.update { it.copy(notice = null) }
+        }
     }
 
     private fun requestAudioFocus(): Boolean {
@@ -946,6 +1007,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         fallbackToSystem: Boolean,
         language: String,
         apiKey: String,
+        continuousListening: Boolean = true,
     ) {
         viewModelScope.launch {
             try {
@@ -956,6 +1018,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                         speed = speed,
                         fallbackToSystem = fallbackToSystem,
                         language = language,
+                        continuousListening = continuousListening,
                     ),
                     apiKey,
                 )
@@ -975,7 +1038,7 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     override fun onCleared() {
         sendJob?.cancel()
         sendJob = null
-        ttsConsumerJob?.cancel()
+        speechPipeline?.cancel()
         interruptSpeech()
         systemTtsEngine.shutdown()
         super.onCleared()
