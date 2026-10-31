@@ -37,13 +37,13 @@ import com.jarvis.assistant.voice.SpeechPayload
 import com.jarvis.assistant.voice.SttEvent
 import com.jarvis.assistant.voice.SystemTtsEngine
 import com.jarvis.assistant.voice.TtsConfig
+import com.jarvis.assistant.voice.TtsEngine
 import java.net.URI
 import java.util.Locale
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.Mutex
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -52,7 +52,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withLock
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** One unit of speech to be synthesised and played in order. */
 sealed interface SpeechItem {

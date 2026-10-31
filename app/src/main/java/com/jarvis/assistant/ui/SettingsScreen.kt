@@ -865,6 +865,7 @@ private fun VoiceSettingsCard(
     var speed by remember(voice.speed) { mutableStateOf(voice.speed) }
     var fallback by remember(voice.fallbackToSystem) { mutableStateOf(voice.fallbackToSystem) }
     var language by remember(voice.language) { mutableStateOf(voice.language) }
+    var continuousListening by remember(voice.continuousListening) { mutableStateOf(voice.continuousListening) }
     var revealKey by remember { mutableStateOf(false) }
 
     Card(

@@ -184,7 +184,9 @@ class AudioPlayer(private val context: Context) {
         val newSession = Session(track, sampleRate)
         // play() before the first write, otherwise a MODE_STREAM track stays
         // paused and the reply is never heard.
-        if (!runCatching { track.play() }.getOrDefault(false)) {
+        val started = runCatching { track.play() }.isSuccess &&
+            track.playState == AudioTrack.PLAYSTATE_PLAYING
+        if (!started) {
             lastError = "Audio output could not be started."
             runCatching { track.release() }
             return null

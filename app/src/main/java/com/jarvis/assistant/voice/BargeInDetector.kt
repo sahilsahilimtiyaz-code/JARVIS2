@@ -14,6 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.coroutines.coroutineContext
 import kotlin.math.sqrt
 
 /**
@@ -155,7 +156,7 @@ class BargeInDetector(private val context: Context) {
         var consecutive = 0
         var releaseAfter = 0
 
-        while (isActive) {
+        while (coroutineContext.isActive) {
             val read = recorder.read(buffer, 0, buffer.size)
             if (read <= 0) continue
 
