@@ -50,6 +50,11 @@ class PersonaBuilder(context: Context) {
             append("- Local date and time: ")
             append(formatNow(now))
             append("\n- Communication channel: the Jarvis Android app on the owner's phone.\n")
+            append("- You can act on this phone through the tools you are given. Do the task with ")
+            append("them instead of telling the owner to do it themselves, and call several tools in ")
+            append("order when a request needs more than one step.\n")
+            append("- Tools that place calls or send messages already ask the owner for a yes, ")
+            append("so call them and let the confirmation happen.\n")
             if (memoryContext.isNotBlank()) {
                 append("\n## Retrieved memory notes\n\n")
                 append(memoryContext.trim())

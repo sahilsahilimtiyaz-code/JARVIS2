@@ -44,7 +44,17 @@
 
 ## Phase 3 — Tier 1 phone tools
 
-- [ ] Not started.
+- [x] Add `ConfirmationGate` and `PermissionGate` to the tool context so a tool can ask the owner before it acts.
+- [x] Add 17 Tier 1 tools: open app, YouTube search, web search, media control, volume, ringer, flashlight, timer, alarm, call contact, send SMS, navigate, calendar event, share text, open settings screen, device status, current time.
+- [x] Add fuzzy installed-app matching with spoken-style names and suggestions when nothing matches.
+- [x] Add contact lookup (name or spoken number) for calls and messages.
+- [x] Add a local JSON action log with a real Action Log screen, newest first, clearable after confirmation.
+- [x] Add runtime permission requests driven from the tool that needs them.
+- [x] Run every tool off the main thread and record each run to the action log.
+- [x] Tell the persona prompt to act with tools and to call several in order for multi-step requests.
+- [x] Rebuild the UI as a HUD: boot sequence, arc reactor home, tools screen, action log, restyled settings, swipe-in quick panel, confirmation sheet.
+- [x] Green local `assembleDebug` and unit tests with no compiler errors or warnings.
+- [ ] Physical phone test of the six Phase 3 commands by voice. Deferred until the next signed APK is installed.
 
 ## Phase 4 — Memory
 

@@ -68,6 +68,10 @@ import com.jarvis.assistant.settings.VoiceProvider
 import com.jarvis.assistant.settings.VoiceSettings
 import com.jarvis.assistant.settings.defaultPresetFor
 import com.jarvis.assistant.settings.presetsFor
+import com.jarvis.assistant.ui.components.GlowDivider
+import com.jarvis.assistant.ui.components.JarvisBackdrop
+import com.jarvis.assistant.ui.components.JarvisTopBar
+import com.jarvis.assistant.ui.theme.JarvisPalette
 
 @Composable
 fun SettingsScreen(
@@ -77,10 +81,7 @@ fun SettingsScreen(
 ) {
     var showAddDialog by remember { mutableStateOf(false) }
 
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = MaterialTheme.colorScheme.background,
-    ) {
+    JarvisBackdrop(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -96,14 +97,6 @@ fun SettingsScreen(
                 contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                item {
-                    Text(
-                        text = "Settings",
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.Light,
-                    )
-                }
-
                 if (state.error != null) {
                     item {
                         SettingsBanner(
@@ -207,39 +200,26 @@ fun SettingsScreen(
 
 @Composable
 private fun SettingsHeader(onBack: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 6.dp, vertical = 4.dp),
-    ) {
-        TextButton(
-            onClick = onBack,
-            modifier = Modifier.align(Alignment.CenterStart),
-        ) {
-            Text("Back")
-        }
-        Text(
-            text = "Settings",
-            modifier = Modifier.align(Alignment.Center),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Medium,
-        )
-    }
+    JarvisTopBar(
+        title = "SETTINGS",
+        status = "CONFIGURATION",
+        statusColor = JarvisPalette.Cyan,
+        onBack = onBack,
+    )
 }
 
 @Composable
 private fun SectionTitle(title: String) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Text(
-            text = title,
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.primary,
+            text = title.uppercase(),
+            style = MaterialTheme.typography.labelMedium,
+            color = JarvisPalette.CyanBright,
+            letterSpacing = 2.4.sp,
             fontWeight = FontWeight.Medium,
         )
-        HorizontalDivider(
-            modifier = Modifier.padding(top = 6.dp),
-            color = MaterialTheme.colorScheme.outlineVariant,
-        )
+        Spacer(Modifier.height(6.dp))
+        GlowDivider()
     }
 }
 

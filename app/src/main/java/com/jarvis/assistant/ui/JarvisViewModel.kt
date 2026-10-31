@@ -27,6 +27,10 @@ import com.jarvis.assistant.settings.ProviderSettings
 import com.jarvis.assistant.settings.SettingsRepository
 import com.jarvis.assistant.settings.VoiceProvider
 import com.jarvis.assistant.settings.VoiceSettings
+import com.jarvis.assistant.tools.ActionLogStore
+import com.jarvis.assistant.tools.ConfirmationGate
+import com.jarvis.assistant.tools.PermissionGate
+import com.jarvis.assistant.tools.TorchState
 import com.jarvis.assistant.tools.ToolRegistry
 import com.jarvis.assistant.voice.AndroidSttEngine
 import com.jarvis.assistant.voice.AudioPlayer
@@ -42,6 +46,7 @@ import java.net.URI
 import java.util.Locale
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -52,6 +57,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -64,10 +70,78 @@ sealed interface SpeechItem {
 class JarvisViewModel(application: Application) : AndroidViewModel(application) {
 
     private val appContext = application.applicationContext
+
+    private val _ui = MutableStateFlow(JarvisUiState())
+    val ui: StateFlow<JarvisUiState> = _ui.asStateFlow()
+
     private val settingsRepository = SettingsRepository(appContext)
     private val personaBuilder = PersonaBuilder(appContext)
     private val greetingEngine = GreetingEngine()
-    private val toolRegistry = ToolRegistry(appContext)
+    private val actionLogStore = ActionLogStore(appContext)
+
+    private var confirmationDeferred: CompletableDeferred<Boolean>? = null
+    private var permissionDeferred: CompletableDeferred<Boolean>? = null
+
+    /**
+     * Sensitive tools (calls, messages) wait here until the owner taps Yes or No in
+     * the confirmation sheet. The wait is bounded, so a tool can never leave the
+     * agent loop hanging.
+     */
+    private val confirmationGate = object : ConfirmationGate {
+        override suspend fun confirm(title: String, detail: String): Boolean {
+            if (confirmationDeferred != null) return false
+            val deferred = CompletableDeferred<Boolean>()
+            confirmationDeferred = deferred
+            _ui.update {
+                it.copy(
+                    pendingConfirmation = PendingConfirmation(
+                        id = UUID.randomUUID().toString(),
+                        title = title,
+                        detail = detail,
+                    ),
+                )
+            }
+            return try {
+                withTimeoutOrNull(CONFIRM_TIMEOUT_MS) { deferred.await() } ?: false
+            } finally {
+                // Runs even when the turn is cancelled (Stop), so a cancelled
+                // request can never jam the gate for the next one.
+                if (confirmationDeferred === deferred) confirmationDeferred = null
+                _ui.update { it.copy(pendingConfirmation = null) }
+            }
+        }
+    }
+
+    /** Requests a runtime permission from the screen, then reports the real answer. */
+    private val permissionGate = object : PermissionGate {
+        override fun isGranted(permission: String): Boolean =
+            ContextCompat.checkSelfPermission(appContext, permission) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+
+        override suspend fun ensure(permission: String, rationale: String): Boolean {
+            if (isGranted(permission)) return true
+            if (permissionDeferred != null) return false
+            val deferred = CompletableDeferred<Boolean>()
+            permissionDeferred = deferred
+            _ui.update {
+                it.copy(pendingPermission = PendingPermission(permission, rationale))
+            }
+            return try {
+                val answer = withTimeoutOrNull(CONFIRM_TIMEOUT_MS) { deferred.await() } ?: false
+                answer || isGranted(permission)
+            } finally {
+                if (permissionDeferred === deferred) permissionDeferred = null
+                _ui.update { it.copy(pendingPermission = null) }
+            }
+        }
+    }
+
+    private val toolRegistry = ToolRegistry(
+        context = appContext,
+        confirmation = confirmationGate,
+        permissions = permissionGate,
+        actionLog = actionLogStore,
+    )
     private val providerRegistry = ProviderRegistry(HttpClientFactory.create())
     private val providerTester = ProviderTester(providerRegistry)
     private val agentLoop = AgentLoop(providerRegistry, toolRegistry)
@@ -85,9 +159,6 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     private var speechPipeline: kotlinx.coroutines.Job? = null
     private val ttsBuffer = StringBuilder()
 
-    private val _ui = MutableStateFlow(JarvisUiState())
-    val ui: StateFlow<JarvisUiState> = _ui.asStateFlow()
-
     private var sendJob: Job? = null
     private var greetingShown = false
     private var nextMessageNumber = 0L
@@ -95,6 +166,16 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
 
     init {
         startSpeechPipeline()
+
+        viewModelScope.launch {
+            actionLogStore.load()
+            _ui.update { it.copy(tools = toolRegistry.catalogue()) }
+        }
+        viewModelScope.launch {
+            actionLogStore.entries.collect { entries ->
+                _ui.update { it.copy(actions = entries) }
+            }
+        }
 
         viewModelScope.launch {
             val prompt = withContext(Dispatchers.IO) { personaBuilder.defaultPrompt() }
@@ -270,7 +351,88 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         } else {
             _ui.update { it.copy(generating = false, toolActivity = null) }
         }
+        // Release anything the agent loop is waiting on, or it would sit there
+        // until the timeout even though the owner pressed Stop.
+        rejectConfirmation()
+        permissionDeferred?.complete(false)
+        permissionDeferred = null
+        _ui.update { it.copy(pendingPermission = null) }
         interruptSpeech()
+    }
+
+    fun selectTab(tab: JarvisTab) {
+        _ui.update { state ->
+            state.copy(
+                tab = tab,
+                notice = null,
+                // Tool availability depends on live device state (torch, media,
+                // permissions), so refresh it whenever the list is opened.
+                tools = if (tab == JarvisTab.TOOLS) toolRegistry.catalogue() else state.tools,
+            )
+        }
+    }
+
+    fun openQuickPanel() {
+        _ui.update {
+            it.copy(
+                quickPanelOpen = true,
+                // The torch is a system-wide switch, so sync before showing it.
+                torchOn = TorchState.isOn,
+                tools = toolRegistry.catalogue(),
+            )
+        }
+    }
+
+    /** Torch and media need no confirmation: they are instant and harmless. */
+    fun toggleTorch() {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                toolRegistry.execute("control_flashlight", "{}")
+            }
+            _ui.update {
+                it.copy(torchOn = TorchState.isOn, tools = toolRegistry.catalogue())
+            }
+            if (!result.success) setError(result.content)
+        }
+    }
+
+    fun toggleMedia() {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                toolRegistry.execute("control_media", "{\"action\":\"play_pause\"}")
+            }
+            _ui.update { it.copy(tools = toolRegistry.catalogue()) }
+            if (!result.success) setError(result.content)
+        }
+    }
+
+    fun closeQuickPanel() {
+        _ui.update { it.copy(quickPanelOpen = false) }
+    }
+
+    fun approveConfirmation() {
+        val deferred = confirmationDeferred
+        confirmationDeferred = null
+        _ui.update { it.copy(pendingConfirmation = null) }
+        deferred?.complete(true)
+    }
+
+    fun rejectConfirmation() {
+        val deferred = confirmationDeferred
+        confirmationDeferred = null
+        _ui.update { it.copy(pendingConfirmation = null) }
+        deferred?.complete(false)
+    }
+
+    fun onPermissionResult(granted: Boolean) {
+        val deferred = permissionDeferred
+        permissionDeferred = null
+        _ui.update { it.copy(pendingPermission = null) }
+        deferred?.complete(granted)
+    }
+
+    fun clearActionLog() {
+        viewModelScope.launch { actionLogStore.clear() }
     }
 
     fun retryLast() {
@@ -292,11 +454,11 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun openSettings() {
-        _ui.update { it.copy(showSettings = true, notice = null) }
+        _ui.update { it.copy(tab = JarvisTab.SETTINGS, notice = null) }
     }
 
     fun closeSettings() {
-        _ui.update { it.copy(showSettings = false, notice = null) }
+        _ui.update { it.copy(tab = JarvisTab.HOME, notice = null) }
     }
 
     fun dismissError() {
@@ -643,8 +805,15 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
             }
 
             is AgentEvent.ToolFinished -> {
-                _ui.update {
-                    it.copy(
+                _ui.update { state ->
+                    state.copy(
+                        messages = state.messages.map { message ->
+                            if (message.id == assistantId && !message.tools.contains(event.name)) {
+                                message.copy(tools = message.tools + event.name)
+                            } else {
+                                message
+                            }
+                        },
                         toolActivity = if (event.success) {
                             "Done."
                         } else {
@@ -837,6 +1006,22 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun toolActivityLabel(name: String): String = when (name) {
         "get_current_time" -> "Checking the current time..."
+        "get_device_status" -> "Reading the phone status..."
+        "open_app" -> "Opening the app..."
+        "search_youtube" -> "Searching YouTube..."
+        "web_search" -> "Searching the web..."
+        "control_media" -> "Adjusting the music..."
+        "set_volume" -> "Setting the volume..."
+        "set_ringer_mode" -> "Changing the ringer..."
+        "control_flashlight" -> "Switching the torch..."
+        "set_timer" -> "Setting a timer..."
+        "set_alarm" -> "Setting an alarm..."
+        "call_contact" -> "Preparing the call..."
+        "send_sms" -> "Preparing the message..."
+        "navigate_to" -> "Opening navigation..."
+        "create_calendar_event" -> "Opening the calendar..."
+        "share_text" -> "Opening the share sheet..."
+        "open_settings_screen" -> "Opening settings..."
         else -> "Using ${name.replace('_', ' ')}..."
     }
 
@@ -1056,5 +1241,6 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     private companion object {
         const val NO_PROVIDER_MESSAGE =
             "No AI provider is configured. Open Settings, add an API key for OpenRouter, Gemini or Anthropic, then try again."
+        const val CONFIRM_TIMEOUT_MS = 120_000L
     }
 }

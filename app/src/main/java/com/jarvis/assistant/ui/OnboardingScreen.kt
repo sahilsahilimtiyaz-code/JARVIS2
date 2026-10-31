@@ -38,8 +38,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jarvis.assistant.settings.OwnerProfile
-import com.jarvis.assistant.ui.components.JarvisOrb
-import com.jarvis.assistant.ui.components.OrbState
+import com.jarvis.assistant.ui.components.ArcReactor
+import com.jarvis.assistant.ui.components.JarvisBackdrop
+import com.jarvis.assistant.ui.components.ReactorState
 
 @Composable
 fun OnboardingScreen(
@@ -53,10 +54,7 @@ fun OnboardingScreen(
     var occupation by rememberSaveable { mutableStateOf(profile.occupation) }
     var preferences by rememberSaveable { mutableStateOf(profile.preferences) }
 
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = MaterialTheme.colorScheme.background,
-    ) {
+    JarvisBackdrop(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -67,9 +65,9 @@ fun OnboardingScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Spacer(Modifier.height(12.dp))
-            JarvisOrb(
-                state = OrbState.IDLE,
-                modifier = Modifier.size(108.dp),
+            ArcReactor(
+                state = ReactorState.IDLE,
+                modifier = Modifier.size(124.dp),
             )
             Spacer(Modifier.height(6.dp))
             Text(

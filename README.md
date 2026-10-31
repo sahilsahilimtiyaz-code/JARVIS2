@@ -2,9 +2,36 @@
 
 Jarvis is a private, native Kotlin personal assistant for Android 14+ (minSdk 31). It is designed to be sideloaded onto its owner's Samsung Galaxy A54, never published on Google Play.
 
-This is **Phase 2**: the app now has a native streaming chat, provider settings, onboarding, persona, greeting, and voice. You can tap the mic, speak, and Jarvis answers aloud using Fish Audio, ElevenLabs, or Android system TTS. Voice settings, audio focus, interruption, and launch greeting are included. Phone tools, memory, and later phases are still ahead.
+This is **Phase 3**: Jarvis now controls the phone. By voice or typing he can open apps, search YouTube, call a contact, send a message, set timers and alarms, switch the torch, control music, volume and the ringer, start navigation, create calendar events, share text and open Android settings screens. Calls and messages always wait for an explicit yes, and every run is recorded in the on-device action log.
 
-**Current status:** Phase 2 source is implemented and a local `assembleDebug` plus unit tests are green. The owner has chosen to defer creating the GitHub repository and running the cloud build until the full app is complete, so no APK artifact exists yet. The build and signing steps below are ready for when that happens.
+**Current status:** Phase 3 source is implemented and a local `assembleDebug` plus unit tests are green. The owner has chosen to defer creating the GitHub repository and running the cloud build until the full app is complete, so no APK artifact exists yet. The build and signing steps below are ready for when that happens.
+
+## The interface
+
+The whole app is one dark HUD built around an arc reactor, and everything on it does something real.
+
+- **Boot**: the reactor spins up while the subsystems come online, then the app hands over as soon as the real settings have loaded.
+- **Home**: reactor hero (tap it to talk), what Jarvis is doing right now, the chat transcript with copy and regenerate, and the composer.
+- **Tools**: every Tier 1 tool with its real availability on this phone, searchable and filterable by category.
+- **Action log**: what Jarvis did, when, and whether it succeeded. Stored only on the phone.
+- **Settings**: providers, voice, persona and permissions, restyled to match.
+- **Quick panel**: swipe in from the right edge, or tap the bolt. It shows live battery, memory, storage, network, temperature and ringer mode, and it really switches the torch and toggles playback.
+
+Bottom navigation is Home, Tools, Log and Settings, with the reactor microphone in the centre.
+
+## Phase 3 test checklist (phone)
+
+Say each line out loud, or type it. Every one should land in **Log** with a green tick.
+
+1. "Open YouTube and search lo-fi" — YouTube (or the browser) opens on the results.
+2. "Call <a contact>" — Jarvis asks out loud and on screen; tap **Yes, do it** and the call starts.
+3. "Set a timer for ten minutes" — the Clock app shows a running timer.
+4. "Turn on the flashlight" — the torch lights up; the quick panel toggle agrees.
+5. "Pause the music" — play something first, then ask; playback pauses.
+6. "Navigate to <a place>" — Maps opens with directions ready.
+7. "What's my battery at?" — a real reading, no invented numbers.
+
+Also check: a question with no tool should answer normally; **Stop** during a call confirmation cancels it; wrong contact names produce a clear spoken answer rather than a call.
 
 ## Phase 1 test checklist
 
