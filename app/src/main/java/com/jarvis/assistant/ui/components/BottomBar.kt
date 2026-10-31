@@ -87,9 +87,9 @@ fun JarvisBottomBar(
             Spacer(Modifier.width(64.dp))
             NavItem(
                 glyph = HudGlyph.LOG,
-                label = "Log",
-                selected = selected == JarvisTab.LOG,
-                onClick = { onSelect(JarvisTab.LOG) },
+                label = "Memory",
+                selected = selected == JarvisTab.MEMORY,
+                onClick = { onSelect(JarvisTab.MEMORY) },
                 modifier = Modifier.weight(1f),
             )
             NavItem(

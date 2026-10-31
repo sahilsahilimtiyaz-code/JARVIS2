@@ -36,6 +36,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -46,6 +47,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.jarvis.assistant.ui.components.GlassPanel
@@ -57,6 +61,28 @@ import com.jarvis.assistant.ui.theme.JarvisTheme
 @Composable
 fun JarvisApp(vm: JarvisViewModel = viewModel()) {
     val state by vm.ui.collectAsStateWithLifecycle()
+
+    // The runtime needs to know whether a screen can show the confirmation sheet
+    // or a permission prompt. With no screen, sensitive tools decline out loud.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> {
+                    vm.setUiVisible(true)
+                    vm.refreshPermissions()
+                }
+
+                Lifecycle.Event.ON_STOP -> vm.setUiVisible(false)
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            vm.setUiVisible(false)
+        }
+    }
 
     JarvisTheme {
         var bootFinished by rememberSaveable { mutableStateOf(false) }
@@ -86,7 +112,11 @@ fun JarvisApp(vm: JarvisViewModel = viewModel()) {
                 state.onboardingComplete &&
                 state.tab != JarvisTab.HOME,
         ) {
-            vm.closeSettings()
+            if (state.tab == JarvisTab.PERMISSIONS) {
+                vm.closePermissions()
+            } else {
+                vm.closeSettings()
+            }
         }
 
         Box(
@@ -128,6 +158,21 @@ fun JarvisApp(vm: JarvisViewModel = viewModel()) {
                                 onDismissNotice = vm::dismissNotice,
                             )
 
+                            JarvisTab.MEMORY -> MemoryScreen(
+                                state = state,
+                                onSelectTab = vm::selectTab,
+                                onToggleMic = vm::toggleListening,
+                                onAdd = { text, type, importance ->
+                                    vm.addMemory(text, type, importance)
+                                },
+                                onUpdate = vm::updateMemory,
+                                onDelete = vm::deleteMemory,
+                                onForgetAll = vm::forgetEverything,
+                                onExport = vm::exportMemories,
+                                onImport = vm::importMemories,
+                                onExtract = vm::extractMemoriesNow,
+                            )
+
                             JarvisTab.TOOLS -> ToolsScreen(
                                 state = state,
                                 onSelectTab = vm::selectTab,
@@ -145,6 +190,13 @@ fun JarvisApp(vm: JarvisViewModel = viewModel()) {
                                 state = state,
                                 onBack = vm::closeSettings,
                                 viewModel = vm,
+                            )
+
+                            JarvisTab.PERMISSIONS -> PermissionsScreen(
+                                state = state,
+                                onBack = vm::closePermissions,
+                                onRefresh = vm::refreshPermissions,
+                                onToggleBackgroundListening = vm::toggleBackgroundListening,
                             )
                         }
                     }

@@ -4,55 +4,62 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import com.jarvis.assistant.settings.VoiceProvider
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withContext
 
 data class TtsConfig(
     val provider: VoiceProvider,
     val apiKey: String,
     val voiceId: String,
+    val model: String = "",
     val speed: Float = 1.0f,
     val fallbackToSystem: Boolean = true,
     val language: String = "en",
 )
 
-sealed interface SpeechPayload {
-    data class Pcm(val bytes: ByteArray, val sampleRate: Int) : SpeechPayload
-    data class SystemText(val text: String) : SpeechPayload
-    data object EndOfReply : SpeechPayload
+/** One piece of raw 16-bit mono PCM, 24 kHz unless the provider says otherwise. */
+data class AudioChunk(
+    val bytes: ByteArray,
+    val sampleRate: Int,
+) {
+    override fun equals(other: Any?): Boolean =
+        other is AudioChunk && sampleRate == other.sampleRate && bytes.contentEquals(other.bytes)
+
+    override fun hashCode(): Int = 31 * bytes.contentHashCode() + sampleRate
 }
 
+/**
+ * A cloud voice.
+ *
+ * [synthesize] emits raw PCM as it arrives so playback can start on the first
+ * chunk of the first sentence. Implementations own only the network request;
+ * playback belongs to [AudioPlayer]. On failure the flow completes without
+ * chunks and [lastError] explains why, in words fit to be shown and spoken.
+ */
 interface TtsEngine {
     var lastError: String?
 
-    /**
-     * Produces audio for [text]. Returns null when synthesis failed; callers
-     * should then fall back to the system engine or surface [lastError].
-     *
-     * Implementations must not start playback themselves. Playback is owned by
-     * [AudioPlayer] so a single AudioTrack session can span several sentences
-     * without a gap or a click between them.
-     */
-    suspend fun synthesize(text: String, config: TtsConfig): SpeechPayload?
+    fun synthesize(text: String, config: TtsConfig): Flow<AudioChunk>
 }
 
 /** Fade length in mono 16-bit frames. 20 ms is enough to stop a click. */
 private const val FADE_FRAMES = 480
 
 /**
- * Ramps the last [FADE_FRAMES] samples of a little-endian 16-bit buffer down
- * to silence. Fading per sample (not per byte) is what keeps the tail from
- * turning into noise.
+ * Ramps the last [FADE_FRAMES] samples of a little-endian 16-bit buffer down to
+ * silence. Fading per sample (not per byte) is what keeps the tail from turning
+ * into noise, and it is applied only to the final chunk of an utterance so
+ * speech inside a sentence is never dipped.
  */
-private fun applyFadeOut(pcm: ByteArray) {
+fun fadeOutPcm(pcm: ByteArray) {
     val frames = pcm.size / 2
     if (frames <= 0) return
     val fade = minOf(FADE_FRAMES, frames)
     val startFrame = frames - fade
     for (i in 0 until fade) {
-        // 1.0 at the head of the fade, 0.0 at the very last sample.
         val factor = 1f - (i.toFloat() / fade)
         val index = (startFrame + i) * 2
         val raw = (pcm[index].toInt() and 0xFF) or (pcm[index + 1].toInt() shl 8)
@@ -63,51 +70,56 @@ private fun applyFadeOut(pcm: ByteArray) {
 }
 
 /**
- * Owns a single [AudioTrack] for the whole of one spoken reply.
+ * Owns a single [AudioTrack] for one spoken reply, so sentence N+1 continues in
+ * the same buffer with no click or gap after sentence N.
  *
- * Sentences of a reply share one track, so there is no click or gap between
- * them. [stop] is safe to call from any state and never throws: a session that
- * is already stopped, released or uninitialised is simply ignored.
+ * Every entry point is safe from any state: a released, stopped or uninitialised
+ * session is ignored rather than thrown, because Stop and barge-in race the
+ * audio thread by design.
  */
 class AudioPlayer(private val context: Context) {
-    private class Session(
-        val track: AudioTrack,
-        val sampleRate: Int,
-    ) {
-        var framesWritten: Long = 0
-        var stopped: Boolean = false
+
+    private class Session(val track: AudioTrack, val sampleRate: Int) {
+        var framesWritten: Long = 0L
+
+        @Volatile
         var released: Boolean = false
     }
 
     private val lock = Any()
     private var session: Session? = null
 
-    /** Bumped by [stop] so in-flight writes abort instead of touching a dead track. */
-    private var generation: Long = 0
+    /** Bumped by [stop] so an in-flight write aborts instead of touching a dead track. */
+    private var generation: Long = 0L
 
+    @Volatile
     var lastError: String? = null
         private set
 
-    val isSpeaking: Boolean get() = synchronized(lock) {
-        val current = session ?: return@synchronized false
-        !current.stopped && current.track.playState == AudioTrack.PLAYSTATE_PLAYING
-    }
-
-    /**
-     * Opens a session if needed and appends [bytes]. The session stays open
-     * after this returns so the next sentence can continue without a gap.
-     */
-    suspend fun writePcm(bytes: ByteArray, sampleRate: Int): Boolean =
-        withContext(Dispatchers.IO) {
-            val target = ensureSession(sampleRate) ?: return@withContext false
-            val gen = synchronized(lock) { generation }
-            write(target, bytes, gen)
+    /** True while the speaker is actually producing sound. */
+    val isSpeaking: Boolean
+        get() = synchronized(lock) {
+            val current = session ?: return@synchronized false
+            !current.released && current.track.playState == AudioTrack.PLAYSTATE_PLAYING
         }
 
-    /** Waits for the buffered audio to drain, then closes the session. */
+    /**
+     * Appends PCM to the current reply, opening a track at [sampleRate] if
+     * needed. Blocking writes pace the caller to real time, which is exactly the
+     * backpressure the synthesis loop needs.
+     */
+    suspend fun write(bytes: ByteArray, sampleRate: Int, fadeOut: Boolean = false): Boolean =
+        withContext(Dispatchers.IO) {
+            if (bytes.isEmpty()) return@withContext true
+            val target = ensureSession(sampleRate) ?: return@withContext false
+            val gen = synchronized(lock) { generation }
+            val data = if (fadeOut) bytes.copyOf().also { fadeOutPcm(it) } else bytes
+            writeFrames(target, data, gen)
+        }
+
+    /** Waits (bounded) for the buffered audio to play, then frees the track. */
     suspend fun finish() = withContext(Dispatchers.IO) {
         val target = synchronized(lock) { session } ?: return@withContext
-        val gen = synchronized(lock) { generation }
         try {
             drain(target)
         } finally {
@@ -129,15 +141,13 @@ class AudioPlayer(private val context: Context) {
     private fun ensureSession(sampleRate: Int): Session? {
         val existing = synchronized(lock) {
             val current = session
-            if (current != null && !current.stopped && !current.released) {
-                if (current.sampleRate != sampleRate) {
-                    // Re-opening at a new rate: discard the old track first.
-                    releaseSession(current)
-                    null
-                } else {
-                    current
-                }
+            if (current != null && !current.released && current.sampleRate == sampleRate) {
+                current
             } else {
+                if (current != null) {
+                    session = null
+                    releaseSession(current)
+                }
                 null
             }
         }
@@ -181,9 +191,6 @@ class AudioPlayer(private val context: Context) {
             return null
         }
 
-        val newSession = Session(track, sampleRate)
-        // play() before the first write, otherwise a MODE_STREAM track stays
-        // paused and the reply is never heard.
         val started = runCatching { track.play() }.isSuccess &&
             track.playState == AudioTrack.PLAYSTATE_PLAYING
         if (!started) {
@@ -191,49 +198,49 @@ class AudioPlayer(private val context: Context) {
             runCatching { track.release() }
             return null
         }
+
+        val newSession = Session(track, sampleRate)
         synchronized(lock) { session = newSession }
         return newSession
     }
 
-    private fun write(target: Session, data: ByteArray, gen: Long): Boolean {
-        if (data.isEmpty()) return true
-
-        applyFadeOut(data)
-
+    private fun writeFrames(target: Session, data: ByteArray, gen: Long): Boolean {
         var offset = 0
         while (offset < data.size) {
             synchronized(lock) {
-                if (generation != gen || target.stopped || target.released) return false
+                if (generation != gen || target.released) return false
             }
             val written = try {
                 target.track.write(data, offset, data.size - offset)
             } catch (e: IllegalStateException) {
-                // A released track lands here. Treat it as "stopped", not a crash.
                 lastError = "Audio output was closed: ${e.message}"
                 return false
             }
-            if (written < 0) {
-                lastError = "Audio output error code $written"
-                return false
+            when {
+                written < 0 -> {
+                    lastError = "Audio output error code $written"
+                    return false
+                }
+                written == 0 -> Thread.sleep(5)
+                else -> {
+                    offset += written
+                    synchronized(lock) {
+                        if (!target.released) target.framesWritten += written / 2
+                    }
+                }
             }
-            if (written == 0) {
-                Thread.sleep(5)
-                continue
-            }
-            offset += written
-            synchronized(lock) { target.framesWritten += written / 2 }
         }
         return true
     }
 
     private fun drain(target: Session) {
-        while (true) {
+        val deadline = System.currentTimeMillis() + MAX_DRAIN_MS
+        while (System.currentTimeMillis() < deadline) {
             val written = synchronized(lock) {
-                if (target.stopped || target.released) return@synchronized -1L
+                if (target.released) return
                 target.framesWritten
             }
-            if (written < 0L) return
-            if (written == 0L) return
+            if (written <= 0L) return
             val head = target.track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
             if (head >= written) return
             Thread.sleep(20)
@@ -243,7 +250,6 @@ class AudioPlayer(private val context: Context) {
     private fun releaseSession(target: Session) {
         if (target.released) return
         target.released = true
-        target.stopped = true
         val track = target.track
         runCatching {
             if (track.state == AudioTrack.STATE_INITIALIZED &&
@@ -255,5 +261,10 @@ class AudioPlayer(private val context: Context) {
         runCatching {
             if (track.state == AudioTrack.STATE_INITIALIZED) track.release()
         }
+    }
+
+    private companion object {
+        /** Never hang a reply because a device reports a stalled playback head. */
+        const val MAX_DRAIN_MS = 30_000L
     }
 }

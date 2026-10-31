@@ -176,6 +176,26 @@ fun SettingsScreen(
                 item {
                     VoiceSettingsCard(state = state, viewModel = viewModel)
                 }
+                item {
+                    BackgroundVoiceCard(state = state, viewModel = viewModel)
+                }
+
+                item {
+                    SectionTitle("Permissions")
+                }
+                item {
+                    PermissionsCard(state = state, onOpenWizard = viewModel::openPermissions)
+                }
+
+                item {
+                    SectionTitle("Safety")
+                }
+                item {
+                    SafetyCard(state = state, viewModel = viewModel)
+                }
+                item {
+                    ActionLogCard(state = state, onOpenLog = viewModel::openActionLog)
+                }
 
                 item {
                     SectionTitle("About")
@@ -926,7 +946,7 @@ private fun VoiceSettingsCard(
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(checked = voice.continuousListening, onCheckedChange = { continuousListening = it })
+                Switch(checked = continuousListening, onCheckedChange = { continuousListening = it })
                 Spacer(Modifier.width(8.dp))
                 Column {
                     Text("Continuous microphone", style = MaterialTheme.typography.bodySmall)
@@ -968,12 +988,12 @@ private fun AboutCard() {
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Text(
-                text = "Jarvis 0.2.0 · Phase 1",
+                text = "Jarvis 0.3.0 · Phase 4",
                 style = MaterialTheme.typography.titleSmall,
             )
             Text(
-                text = "Streaming chat, encrypted provider keys, onboarding, persona and greeting. " +
-                    "Chat history is kept in memory for now; persistent memory arrives in Phase 4.",
+                text = "Streaming chat, encrypted keys, custom Fish Audio and ElevenLabs voices, " +
+                    "Tier 1 phone tools, screen control, background listening and persistent memory.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

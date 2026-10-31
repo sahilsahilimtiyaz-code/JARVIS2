@@ -41,6 +41,8 @@ data class ToolContext(
     val appContext: Context,
     val confirmation: ConfirmationGate,
     val permissions: PermissionGate,
+    val memory: MemoryBridge? = null,
+    val screen: ScreenAccess? = null,
 )
 
 data class ToolResult(
@@ -85,6 +87,8 @@ class ToolRegistry(
     private val confirmation: ConfirmationGate = NeverConfirm,
     private val permissions: PermissionGate = NoPermissions,
     private val actionLog: ActionLogStore? = null,
+    memory: MemoryBridge? = null,
+    screen: ScreenAccess? = null,
     private val tools: List<Tool> = defaultTools(),
 ) : ToolExecutor {
 
@@ -92,6 +96,8 @@ class ToolRegistry(
         appContext = context.applicationContext,
         confirmation = confirmation,
         permissions = permissions,
+        memory = memory,
+        screen = screen,
     )
 
     override fun definitions(): List<ToolDefinition> = tools.map { it.definition }
@@ -181,4 +187,14 @@ fun defaultTools(): List<Tool> = listOf(
     // Device and info
     DeviceStatusTool(),
     CurrentTimeTool(),
+    // Memory (Phase 4)
+    RememberTool(),
+    SearchMemoryTool(),
+    ForgetMemoryTool(),
+    // Screen control (Tier 3, requires the accessibility service)
+    ReadScreenTool(),
+    TapScreenTool(),
+    TypeOnScreenTool(),
+    ScrollScreenTool(),
+    SystemNavigationTool(),
 )

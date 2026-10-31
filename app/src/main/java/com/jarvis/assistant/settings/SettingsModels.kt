@@ -36,6 +36,8 @@ data class PersonaSettings(
     val tone: String = "dry British wit, calm and understated",
     val customPrompt: String? = null,
     val lastGreetingId: String? = null,
+    /** Epoch millis of the last spoken greeting, so Jarvis does not repeat himself. */
+    val lastGreetingAt: Long = 0L,
 )
 
 @Serializable
@@ -43,13 +45,32 @@ data class VoiceSettings(
     val provider: VoiceProvider = VoiceProvider.SYSTEM,
     val encryptedApiKey: String = "",
     val voiceId: String = "",
+    /** Cloud model name. Fish Audio defaults to the free S2.1 model. */
+    val model: String = "",
     val speed: Float = 1.0f,
     val fallbackToSystem: Boolean = true,
     val language: String = "en",
+    /** Resume listening automatically after Jarvis finishes a reply. */
     val continuousListening: Boolean = true,
+    /** Keep the microphone service running in the background. */
+    val alwaysListening: Boolean = false,
+    /** Require the wake word before treating speech as a command. */
+    val requireWakeWord: Boolean = true,
+    val wakeWord: String = "jarvis",
 ) {
     val hasSavedKey: Boolean get() = encryptedApiKey.isNotBlank()
 }
+
+@Serializable
+data class SafetySettings(
+    /** Master switch for screen control through the accessibility service. */
+    val screenControlEnabled: Boolean = true,
+    /**
+     * Package-name and app-label keywords that are never automated. The default
+     * list covers banking, payments, password managers and authenticators.
+     */
+    val blocklistKeywords: List<String> = DEFAULT_BLOCKLIST,
+)
 
 @Serializable
 data class AppSettings(
@@ -58,6 +79,7 @@ data class AppSettings(
     val defaultProviderId: String = "openrouter",
     val persona: PersonaSettings = PersonaSettings(),
     val voice: VoiceSettings = VoiceSettings(),
+    val safety: SafetySettings = SafetySettings(),
 ) {
     val defaultProvider: ProviderSettings?
         get() = providers.firstOrNull { it.id == defaultProviderId }
@@ -66,6 +88,31 @@ data class AppSettings(
     val configuredProviders: List<ProviderSettings>
         get() = providers.filter { it.enabled && it.hasSavedKey }
 }
+
+/** Keywords are matched case-insensitively against the package name and label. */
+val DEFAULT_BLOCKLIST: List<String> = listOf(
+    "bank",
+    "banking",
+    "neobank",
+    "pay",
+    "payment",
+    "wallet",
+    "upi",
+    "venmo",
+    "paypal",
+    "cash app",
+    "google pay",
+    "samsung pay",
+    "password",
+    "1password",
+    "bitwarden",
+    "lastpass",
+    "keepass",
+    "keeper",
+    "authenticator",
+    "authy",
+    "otp",
+)
 
 fun defaultProviderSettings(): List<ProviderSettings> = listOf(
     ProviderSettings(

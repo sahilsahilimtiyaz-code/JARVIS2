@@ -1,12 +1,15 @@
 package com.jarvis.assistant.ui
 
+import com.jarvis.assistant.memory.MemoryEntity
+import com.jarvis.assistant.memory.ProfileFactEntity
+import com.jarvis.assistant.permissions.PermissionSummary
 import com.jarvis.assistant.settings.AppSettings
 import com.jarvis.assistant.tools.ActionLogEntry
 import com.jarvis.assistant.tools.ToolSummary
 
 enum class ChatAuthor { USER, JARVIS }
 
-enum class JarvisTab { HOME, TOOLS, LOG, SETTINGS }
+enum class JarvisTab { HOME, MEMORY, TOOLS, LOG, SETTINGS, PERMISSIONS }
 
 data class ChatMessageUi(
     val id: String,
@@ -47,20 +50,27 @@ data class JarvisUiState(
     val generating: Boolean = false,
     val listening: Boolean = false,
     val speaking: Boolean = false,
+    val partialTranscript: String = "",
     val activeProvider: String? = null,
     val toolActivity: String? = null,
     val error: String? = null,
     val notice: String? = null,
+    val voiceStatus: String? = null,
     val tab: JarvisTab = JarvisTab.HOME,
     val onboardingBusy: Boolean = false,
     val providerTests: Map<String, ProviderTestState> = emptyMap(),
     val defaultPersonaPrompt: String = "",
     val tools: List<ToolSummary> = emptyList(),
     val actions: List<ActionLogEntry> = emptyList(),
+    val memories: List<MemoryEntity> = emptyList(),
+    val facts: List<ProfileFactEntity> = emptyList(),
+    val memoryCount: Int = 0,
     val pendingConfirmation: PendingConfirmation? = null,
     val pendingPermission: PendingPermission? = null,
     val quickPanelOpen: Boolean = false,
     val torchOn: Boolean = false,
+    val serviceActive: Boolean = false,
+    val permissions: PermissionSummary = PermissionSummary(),
 ) {
     val showSettings: Boolean
         get() = tab == JarvisTab.SETTINGS

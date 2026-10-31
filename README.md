@@ -1,63 +1,164 @@
 # Jarvis for Android
 
-Jarvis is a private, native Kotlin personal assistant for Android 14+ (minSdk 31). It is designed to be sideloaded onto its owner's Samsung Galaxy A54, never published on Google Play.
+Jarvis is a private, native Kotlin personal assistant for Android 14+ (minSdk 31), built for one
+owner's Samsung Galaxy A54. It is sideloaded, never published on Google Play.
 
-This is **Phase 3**: Jarvis now controls the phone. By voice or typing he can open apps, search YouTube, call a contact, send a message, set timers and alarms, switch the torch, control music, volume and the ringer, start navigation, create calendar events, share text and open Android settings screens. Calls and messages always wait for an explicit yes, and every run is recorded in the on-device action log.
+**Current status: Phase 4 complete, plus background listening and single-step screen control.**
+Jarvis chats with your own AI provider, speaks in your Fish Audio or ElevenLabs voice, controls the
+phone by voice, listens in the background for its wake word, remembers you across restarts, and can
+read and tap the screen once you enable accessibility.
 
-**Current status:** Phase 3 source is implemented and a local `assembleDebug` plus unit tests are green. The owner has chosen to defer creating the GitHub repository and running the cloud build until the full app is complete, so no APK artifact exists yet. The build and signing steps below are ready for when that happens.
+Local `assembleDebug` and `testDebugUnitTest` are green (JDK 17, Gradle 9.6.0, AGP 9.5.0, SDK 37.0).
+No signed APK has been installed on the phone yet, so every phone checklist below is still pending.
+
+## What works now
+
+- **Brain:** OpenRouter, OpenAI, Groq, Together, Ollama or any OpenAI-compatible endpoint, plus Google
+  Gemini and Anthropic, with streaming, fallback order and tool calling.
+- **Voice:** Fish Audio and ElevenLabs streaming PCM into one gapless player, Android system voice as
+  fallback, barge-in, spoken greeting, hands-free follow-up.
+- **Phone tools:** open any app, YouTube search, web search, media, volume, ringer, torch, timers,
+  alarms, calls, SMS, navigation, calendar, share, settings screens, battery and network status.
+- **Memory:** every fact, preference and conversation is stored on the phone, retrievable by keyword,
+  and injected into the prompt. Background extraction adds facts after a conversation goes quiet.
+- **Always-on:** a microphone foreground service with a wake word, an ongoing Stop notification and a
+  Quick Settings tile.
+- **Screen control:** read the screen, tap a labelled control, type, scroll, and press system keys,
+  with a blocklist and confirmations on anything that could send, pay or delete.
 
 ## The interface
 
-The whole app is one dark HUD built around an arc reactor, and everything on it does something real.
+- **Home:** arc reactor (tap to talk), what Jarvis is doing, transcript, composer and Stop.
+- **Memory:** search, add, edit and delete notes; profile facts; export/import JSON; forget everything.
+- **Tools:** every tool with its real availability on this phone.
+- **Settings:** providers, voice, persona, permissions, safety and the action log.
+- **Quick panel:** swipe from the right edge for live battery, memory, storage, network, temperature and
+  ringer mode, with working torch and playback switches.
 
-- **Boot**: the reactor spins up while the subsystems come online, then the app hands over as soon as the real settings have loaded.
-- **Home**: reactor hero (tap it to talk), what Jarvis is doing right now, the chat transcript with copy and regenerate, and the composer.
-- **Tools**: every Tier 1 tool with its real availability on this phone, searchable and filterable by category.
-- **Action log**: what Jarvis did, when, and whether it succeeded. Stored only on the phone.
-- **Settings**: providers, voice, persona and permissions, restyled to match.
-- **Quick panel**: swipe in from the right edge, or tap the bolt. It shows live battery, memory, storage, network, temperature and ringer mode, and it really switches the torch and toggles playback.
+Bottom navigation is Home, Memory, the reactor microphone, Tools and Settings.
 
-Bottom navigation is Home, Tools, Log and Settings, with the reactor microphone in the centre.
+## Fish Audio and ElevenLabs
 
-## Phase 3 test checklist (phone)
+1. Open **Settings, Voice**.
+2. Choose **Fish Audio**. Paste your API key from `fish.audio/app/api-keys`.
+3. Paste the **voice reference id**. That is the id of a cloned voice or a voice from your Fish Audio
+   library, not its display name.
+4. Leave the model field blank for `s2.1-pro-free` (the only model that works with a zero balance), or
+   type `s2.1-pro` if your account has credit.
+5. Tap **Save voice**, then **Test voice**. The sentence must come out in your voice.
 
-Say each line out loud, or type it. Every one should land in **Log** with a green tick.
+ElevenLabs works the same way with `xi-api-key` and a voice id from your library; Jarvis uses the
+lowest-latency Flash model and `pcm_24000`, which is the same format as Fish Audio.
 
-1. "Open YouTube and search lo-fi" — YouTube (or the browser) opens on the results.
-2. "Call <a contact>" — Jarvis asks out loud and on screen; tap **Yes, do it** and the call starts.
+If the cloud voice fails, Jarvis falls back to the Android system voice (unless you turn the fallback
+off) and shows the reason in **Voice status**. The common ones:
+
+| Message | Meaning |
+|---|---|
+| Fish Audio rejected the API key | The key is wrong or revoked. Copy it again. |
+| Fish Audio has no credit for this model | `s2.1-pro` needs credit; use `s2.1-pro-free`. |
+| Fish Audio could not find that voice reference id | The id is not a voice on your account. |
+| Fish Audio is busy (rate limit) | 429 concurrency limit; Jarvis retries once, then falls back. |
+| Fish Audio returned no audio | The request worked but produced nothing; check the voice id. |
+| ElevenLabs could not find that voice id | The id is wrong or belongs to another account. |
+
+Notes: audio is 16-bit mono PCM at 24 kHz served over HTTPS. Text is sent to the provider only when
+Jarvis speaks; nothing is cached by the app. A failed sentence falls back individually, so a long
+reply can mix voices mid-way rather than stop.
+
+## Background listening
+
+1. Grant the microphone in **Settings, Permissions**.
+2. Turn on **Listen in the background** (Settings, Voice extras) or the **Permissions** switch. The
+   service starts with an ongoing **Jarvis is listening** notification.
+3. Say **"Jarvis"**. He answers "Yes, sir?" (or a fresh greeting after a pause), then waits for the
+   request: "Jarvis, open YouTube and search lo-fi."
+4. Stop it from the notification action, the Quick Settings tile, or the switch in the app.
+
+Android 14 only allows a microphone foreground service to start from a visible app, its notification
+or a tile, so open Jarvis once after a reboot. Set Jarvis's battery usage to **Unrestricted** and
+remove him from Samsung's **Sleeping apps** or the service will be killed with the screen off.
+
+The wake word is matched from the recogniser's text, so a second Picovoice key is not needed. You can
+change the wake word, or turn the requirement off so every sentence is treated as a request, in
+**Settings, Voice extras**.
+
+## Accessibility screen control
+
+1. Open **Settings, Permissions, Accessibility**.
+2. If the switch is greyed out: Android **Settings, Apps, Jarvis**, three-dot menu, **Allow restricted
+   settings**. Samsung may call it **More options**.
+3. Return to **Accessibility, Downloaded apps, Jarvis screen control** and enable it.
+4. Come back to Jarvis. The wizard shows "Enabled" once the service is connected.
+
+Then, for example: "Jarvis, open Settings and turn on dark mode" (he reads, taps, and verifies one
+step at a time), "scroll down", "type hello in the search box", or "go back".
+
+Safety: banking, payment, wallet, password-manager and authenticator apps are refused before anything
+is read. Taps whose label contains send, pay, buy, delete, confirm, transfer, post or call ask for your
+yes first. Password fields are reported as `[password field]`. Every action lands in the action log.
+If Android Advanced Protection Mode is on, it blocks accessibility and sideloading for apps like this
+one; the wizard warns about that too.
+
+## Memory
+
+Jarvis stores profile facts, free-form memories (with type and importance), conversations, messages,
+summaries, skills and the action log in a local Room database. Before each reply he includes the core
+profile and up to eight memories that match your request. After a conversation goes quiet for about
+four minutes, a background job asks the model for durable facts and saves them, skipping secrets.
+
+- **Remember something now:** "Jarvis, remember that my sister is called Anya."
+- **Ask him:** "What do you remember about my work?"
+- **Forget one thing:** "Forget what I told you about my sister" (he asks first).
+- **Forget everything:** Memory screen, **Forget everything**. It clears facts, memories,
+  conversations, summaries and skills, and the on-screen transcript; the action log is kept as the
+  safety record.
+- **Export/import:** Memory screen, **Export** writes JSON through the system file picker; **Import**
+  reads it back and merges by content.
+
+## Phase 4 test checklist (phone)
+
+1. Say or type: "Remember that my sister is called Anya and I prefer tea to coffee."
+2. Force-stop Jarvis from Android settings and reopen it.
+3. Ask: "What is my sister called?" and "What do I prefer?" Both answers must come from memory, with
+   no re-typing.
+4. Open **Memory** and confirm the notes appear; edit one, delete one.
+5. Start a conversation about a lasting detail, wait five minutes, reopen **Memory**. A new extracted
+   note should be there (or press **Extract now**).
+6. Export to JSON, **Forget everything**, then import the file; the notes return.
+7. Check **Settings, Permissions** and grant anything marked as missing.
+8. Turn on background listening, lock the screen, and say "Jarvis".
+
+## Phase 3 and voice checklist (phone)
+
+1. "Open YouTube and search lo-fi" — YouTube (or the browser) opens on results.
+2. "Call <a contact>" — Jarvis asks; tap **Yes, do it** and the call starts.
 3. "Set a timer for ten minutes" — the Clock app shows a running timer.
-4. "Turn on the flashlight" — the torch lights up; the quick panel toggle agrees.
-5. "Pause the music" — play something first, then ask; playback pauses.
+4. "Turn on the flashlight" — torch on; the quick panel agrees.
+5. "Pause the music" — playback pauses.
 6. "Navigate to <a place>" — Maps opens with directions ready.
 7. "What's my battery at?" — a real reading, no invented numbers.
+8. **Test voice** in Settings, then interrupt Jarvis mid-sentence by speaking; he must stop at once.
 
-Also check: a question with no tool should answer normally; **Stop** during a call confirmation cancels it; wrong contact names produce a clear spoken answer rather than a call.
+## Build and install the APK
 
-## Phase 1 test checklist
+### Set up the permanent signing key first
 
-Before moving to Phase 2, the owner should confirm on the phone:
-
-1. Open **Jarvis**. Complete the short onboarding and save the profile.
-2. Add an OpenRouter API key (or Gemini key), choose a model, and tap **Save** and **Test**.
-3. Send a text message from the chat composer.
-4. Confirm the reply streams into the chat and the provider name is shown.
-
-## Phase 2 test checklist
-
-## Set up the permanent signing key first
-
-Do this **before installing the first APK**, once the repository exists. It keeps every future build signed with the same key, so Android updates Jarvis in place instead of forcing an uninstall that wipes his data.
+Do this **before installing the first APK**, once the repository exists. It keeps every future build
+signed with the same key, so Android updates Jarvis in place instead of forcing an uninstall that
+wipes his data.
 
 1. Open the repository in your phone browser and tap **Actions**.
-2. In the left-hand workflow list, tap **Generate Jarvis signing keystore**.
-3. Tap **Run workflow**. Leave the branch selected and tap the green **Run workflow** button.
+2. In the workflow list, tap **Generate Jarvis signing keystore**.
+3. Tap **Run workflow**, leave the branch selected, tap the green **Run workflow** button.
 4. Wait for a green check, then open the completed run.
-5. Scroll to **Artifacts** and tap **jarvis-signing-setup**. Your browser downloads a ZIP file. If GitHub asks you to sign in, sign in first.
-6. Open the phone's **Files** app, find the downloaded ZIP (usually **Downloads**), and extract it. It contains `jarvis.keystore`, `KEYSTORE_BASE64.txt` and `SIGNING_SECRETS.txt`.
-7. Open `KEYSTORE_BASE64.txt` in a text editor and copy its **entire single-line contents**. Do not add spaces or line breaks.
-8. Return to the repository page. Tap **Settings** (on a phone, open the repository menu if the tab is hidden).
-9. Tap **Secrets and variables**, then **Actions**, then **New repository secret**.
-10. Add the four secrets below, one at a time. For each one, type the exact name, paste the value, and tap **Add secret**.
+5. Scroll to **Artifacts** and tap **jarvis-signing-setup**. If GitHub asks you to sign in, sign in first.
+6. Open **Files**, find the downloaded ZIP (usually **Downloads**) and extract it. It contains
+   `jarvis.keystore`, `KEYSTORE_BASE64.txt` and `SIGNING_SECRETS.txt`.
+7. Open `KEYSTORE_BASE64.txt` and copy its entire single-line contents. Do not add spaces or breaks.
+8. Return to the repository. Tap **Settings**, **Secrets and variables**, **Actions**, then
+   **New repository secret**.
+9. Add the four secrets below, one at a time, typing the exact name and pasting the value.
 
     | Secret name | Value |
     |---|---|
@@ -66,39 +167,60 @@ Do this **before installing the first APK**, once the repository exists. It keep
     | `KEY_ALIAS` | The text after `KEY_ALIAS=` in `SIGNING_SECRETS.txt` (normally `jarvis`) |
     | `KEY_PASSWORD` | The text after `KEY_PASSWORD=` in `SIGNING_SECRETS.txt` |
 
-11. Go back to **Actions**, open **Generate Jarvis signing keystore**, open its run menu, and **delete the `jarvis-signing-setup` artifact**.
-12. Delete the downloaded ZIP, the extracted folder and the two text files from your phone, including the Files app's trash or recycle bin.
+10. Open **Actions, Generate Jarvis signing keystore**, open its run menu and **delete the
+    `jarvis-signing-setup` artifact**.
+11. Delete the downloaded ZIP, the extracted folder and the two text files from the phone, including
+    the Files trash.
 
-The keystore and passwords are now only in GitHub's encrypted Actions secrets and in your memory. Never commit them to the repository.
+### Build
 
-## Build and install the APK
+1. **Actions, Build Jarvis APK, Run workflow.**
+2. Wait for the green check (a first build takes a few minutes).
+3. Open the run, scroll to **Artifacts**, tap **jarvis-debug-apk**, extract `app-debug.apk`.
+4. Tap the APK in Files. If Android blocks it, allow **Install unknown apps** for Files, then tap again.
+5. Open **Jarvis**, finish onboarding, add a provider key, then add your voice key.
 
-1. In the repository, tap **Actions**.
-2. Tap **Build Jarvis APK** in the workflow list.
-3. Tap **Run workflow**, leave the branch selected, and tap **Run workflow**.
-4. Wait for the green check. A full first build normally takes a few minutes.
-5. Open the completed run, scroll to **Artifacts**, and tap **jarvis-debug-apk**.
-6. Extract the downloaded ZIP. It contains `app-debug.apk`.
-7. Tap `app-debug.apk` in the Files app. If Android blocks it, allow **Install unknown apps** for Files or your browser, then tap the APK again.
-8. Open **Jarvis**. The dark screen with the blue arc reactor should say **Jarvis online**.
+Every push builds automatically. A second build installs over the first without wiping data as long
+as both were signed with the same key. The **Verify APK is signed** step prints one certificate
+SHA-256; compare it across runs.
 
-Every push to the repository starts the same build automatically. You can also start it manually with **Run workflow**.
+### If the build is red
 
-## Test that updates preserve data
+Open the failed run, tap the failed job and read the first `e:` line. The build is intentionally done
+only in GitHub Actions because the owner has no PC. Do not commit a Gradle wrapper JAR; the workflow
+installs Gradle 9.6.0 explicitly.
 
-1. With the signed APK already installed, open **Actions → Build Jarvis APK → Run workflow** again.
-2. Download and install the new `app-debug.apk`.
-3. Android should offer an **Update** and must not ask you to uninstall Jarvis first.
-4. Open Jarvis again; it should still say **Jarvis online**.
+## Permissions Jarvis asks for
 
-If Android says the APK conflicts with the installed app, the builds used different signing keys. That happens if the first APK was installed before the four secrets were added. Uninstall Jarvis once, install the signed build, and future signed builds will update in place.
-
-To compare builds, open a successful **Build Jarvis APK** run and expand **Verify APK is signed**. The certificate SHA-256 line must be the same in every signed run.
-
-## If the build is red
-
-Open the failed run, tap the failed job, and read the first error in the log. The build is intentionally performed only in GitHub Actions because the owner has no PC and this coding environment has no local Java or Android SDK. Do not add a Gradle wrapper JAR; the workflow installs an explicit Gradle version with `gradle/actions/setup-gradle`.
+| Permission | When | Why |
+|---|---|---|
+| Microphone | First mic tap or background listening | Wake word and speech recognition |
+| Notifications | First background listening start | Ongoing listening card with Stop |
+| Accessibility | When you open the wizard | Reading and tapping the screen |
+| Battery unrestricted | Wizard step | Keeps background listening alive |
+| Contacts / Phone / SMS | First call or message | Lookup, dial, send |
+| Camera / torch | First torch request | Flashlight control |
 
 ## Security boundary
 
-Provider API keys will be entered by the owner inside Jarvis in Phase 1 and stored with an Android Keystore AES-GCM key. Signing material, API keys and decoded secrets must never be added to this repository.
+API keys are typed into the app and stored with AES-GCM using an Android Keystore key. They are never
+written to the repository, `BuildConfig` or logs. Voice audio, prompts and memory stay on the phone
+except for what must be sent to your chosen AI and voice providers. Signing material must never be
+committed. The accessibility service collects no events and sends nothing anywhere by itself.
+
+## Where things live
+
+```
+app/src/main/java/com/jarvis/assistant/
+  brain/        providers, agent loop, HTTP and SSE
+  core/         JarvisCore runtime and shared state
+  memory/       Room entities, DAO, repository, extraction worker
+  voice/        STT, wake word, Fish Audio, ElevenLabs, system TTS, player, barge-in
+  tools/        every phone action, schema helpers and the action log
+  service/      listening service, notification helper, Quick Settings tile
+  accessibility/ service and screen primitives
+  settings/     encrypted keys and preferences
+  persona/      prompt builder and greetings
+  permissions/  live permission snapshot and settings deep links
+  ui/           Compose HUD, memory, permissions and settings screens
+```

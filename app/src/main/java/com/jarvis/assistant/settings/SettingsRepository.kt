@@ -8,6 +8,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import java.io.IOException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -31,6 +32,9 @@ class SettingsRepository(
      * Atomically updates the whole settings document. The transform must be
      * quick and must not suspend.
      */
+    /** The current document, for work that cannot collect a flow. */
+    suspend fun current(): AppSettings = settings.first()
+
     suspend fun update(transform: (AppSettings) -> AppSettings): AppSettings {
         var updated = AppSettings()
         appContext.jarvisDataStore.edit { preferences ->
@@ -51,6 +55,9 @@ class SettingsRepository(
                     tone = persona.tone.trim().ifBlank { "dry British wit, calm and understated" },
                     customPrompt = persona.customPrompt?.trim()?.takeIf { it.isNotBlank() },
                     lastGreetingId = current.persona.lastGreetingId,
+                    // Preserve the greeting clock, or editing the persona would
+                    // let Jarvis repeat himself on the next wake.
+                    lastGreetingAt = current.persona.lastGreetingAt,
                 ),
             )
         }

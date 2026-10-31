@@ -2,72 +2,160 @@
 
 ## 2026-10-30 — Project start and prior work
 
-- The working directory `/sdcard/JARVIS2` was empty. A previous Phase 0 attempt existed at `/sdcard/JARVIS`, plus the Brahma AI prototype at `/sdcard/jarves/Brahma-Ai-Evo-main` and the earlier web prototype at `/root/projects/jarvis-web`.
-- The previous Phase 0 attempt was not reused as-is: its Git directory (`/root/JARVIS.git`) no longer exists, its source stopped at a single screen, and its CI installed `platforms;android-37`, which is not the package name published by the current Android SDK repository. Phase 0 was rebuilt cleanly so the first pushed commit is the first buildable commit.
-- Brahma AI's native `brahma-connect-android` project was inspected for later phases (foreground service, accessibility service and device command patterns). No web code is being carried over. Useful Kotlin patterns will be ported when the relevant phase starts.
+- The working directory `/sdcard/JARVIS2` was empty. A previous Phase 0 attempt existed at
+  `/sdcard/JARVIS`, plus the Brahma AI prototype and an earlier web prototype.
+- The previous Phase 0 attempt was not reused as-is: its source stopped at a single screen and its CI
+  installed a platform package name that the SDK repository does not publish. Phase 0 was rebuilt
+  cleanly so the first pushed commit is the first buildable commit.
+- Brahma AI's native Android project was inspected for later phases. No web code is carried over.
 
 ## 2026-10-30 — Toolchain
 
-- **Android Gradle Plugin 9.5.0**, released October 2026. It supports API 37 and uses built-in Kotlin, so the obsolete `org.jetbrains.kotlin.android` plugin is not applied.
-- **Gradle 9.6.0**, the minimum and default Gradle version documented for AGP 9.5. CI installs it explicitly with `gradle/actions/setup-gradle`; no Gradle wrapper JAR is committed.
-- **JDK 17**, the documented AGP 9.5 minimum and default.
-- **Kotlin 2.4.10** and the matching Compose Compiler Gradle plugin. AGP 9 bundles an older Kotlin Gradle plugin, so the root build declares KGP 2.4.10 explicitly. This is the version shown in the current official Compose compiler setup documentation.
-- **Compose BOM 2026.09.00**, the latest stable BOM in Google's Maven repository and the version named in the current official Compose setup docs. It maps to Compose UI 1.12.1 and Material3 1.4.0.
-- **compileSdk 37**, required by Compose UI 1.12.0 and newer according to the official Compose setup page. The SDK package is installed as `platforms;android-37.0`, the package name currently published in the Android SDK repository (the platform uses minor-version packages for API 37).
-- **targetSdk 36** and **minSdk 31**. API 36 is the stable target used for Phase 0; compileSdk is intentionally newer than targetSdk, which Android documents as supported and normal. The owner's Galaxy A54 runs Android 14 or newer.
-- **Build Tools 36.0.0**, the default for AGP 9.5.
+- **Android Gradle Plugin 9.5.0**, **Gradle 9.6.0**, **JDK 17**, **Kotlin 2.4.10**,
+  **Compose BOM 2026.09.00**, **compileSdk 37**, **targetSdk 36**, **minSdk 31**.
+- **Build Tools 36.0.0** and the `platforms;android-37.0` SDK package.
+- No Gradle wrapper JAR is committed; CI installs Gradle explicitly.
 
 ## 2026-10-30 — CI and signing
 
-- CI uses the current major action versions: `actions/checkout@v7`, `actions/setup-java@v6`, `android-actions/setup-android@v4`, `gradle/actions/setup-gradle@v6` and `actions/upload-artifact@v7`.
-- A bootstrap APK is produced when the four signing secrets are absent, using the ephemeral CI debug key. This keeps the first build green before the owner has run the keystore workflow, but it cannot update over a differently signed build. The README tells the owner to configure signing before installing the first APK.
-- When `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS` and `KEY_PASSWORD` all exist, CI decodes the keystore to `$RUNNER_TEMP`, passes the path and passwords through environment variables, and signs both debug and release variants with it. Values are never echoed.
-- The keystore workflow uses PKCS12 with one random password for both the store and key, because PKCS12 does not reliably support separate key passwords. It uploads the keystore and a plain-text secrets sheet as a one-day artifact. The owner must add the four secrets and delete the artifact and downloaded files.
-- Debug builds do not use an `applicationIdSuffix`, so a debug APK can update the installed app without changing its application ID.
-- `android:allowBackup="false"` is set because an Android cloud backup would restore encrypted preference blobs without the hardware-backed Keystore key, causing undecryptable settings. Jarvis will provide explicit JSON export/import later.
+- CI uses `actions/checkout@v7`, `actions/setup-java@v6`, `android-actions/setup-android@v4`,
+  `gradle/actions/setup-gradle@v6` and `actions/upload-artifact@v7`.
+- A bootstrap APK uses the ephemeral CI debug key until the four signing secrets exist; it cannot
+  update over a differently signed build. The README explains the one-time keystore workflow.
+- Debug builds keep the production application id, so a signed debug APK updates in place.
+- `android:allowBackup="false"` because an encrypted DataStore restored without its Keystore key
+  would be undecryptable. Jarvis provides explicit JSON export instead.
 
 ## 2026-10-30 — Phase 1 implementation
 
-- Phase 1 uses one shared `LlmProvider` interface and `AgentLoop` instead of provider-specific orchestration.
-- The OpenAI-compatible adapter covers OpenRouter, OpenAI, Groq, Together, Ollama and compatible endpoints; it emits text deltas and accumulates streamed tool calls.
-- Gemini uses `streamGenerateContent` with `systemInstruction` and `functionDeclarations`, converting the shared JSON schema to Gemini's dialect.
-- Anthropic uses the Messages API with a top-level `system` field, `tool_use`, and `tool_result` handling.
-- Phase 1 keeps conversation history in the UI layer for the current turn; Room-backed conversations and messages arrive with Phase 4 memory.
-- The greeting is generated locally by `GreetingEngine` and stored through the persona settings; spoken TTS arrives in Phase 2.
+- One shared `LlmProvider` interface and `AgentLoop`, rather than provider-specific orchestration.
+- Gemini uses `streamGenerateContent` with `systemInstruction` and `functionDeclarations`.
+- Anthropic uses the Messages API with top-level `system`, `tool_use` and `tool_result`.
 
 ## 2026-10-30 — Phase 2 implementation
 
-- Voice settings are stored in the existing encrypted DataStore document; the cloud voice API key uses the same Android Keystore AES-GCM cipher as provider keys.
-- Fish Audio and ElevenLabs synthesize PCM (`pcm` at 24 kHz and `pcm_24000`) and play it through `AudioTrack`; this avoids MP3 container parsing and keeps latency low.
-- Fish Audio uses the `s2.1-pro` model header; ElevenLabs uses `eleven_flash_v2_5`, its lowest-latency multilingual model.
-- Android system TTS is the fallback and is also the default provider when no cloud key is configured.
-- Barge-in uses an `AudioRecord` energy detector with `AcousticEchoCanceler` where available; detected speech interrupts the active utterance and starts speech recognition.
-- Speech is queued sentence by sentence so playback can begin after the first complete sentence while the model streams.
+- Cloud voices synthesise **raw 16-bit mono PCM** to avoid MP3 container parsing and keep latency low.
+- Fish Audio and ElevenLabs use the same 24 kHz playback path, so switching voices needs no extra code.
+- Android system TTS is the fallback and the default when no cloud key is configured.
+- Barge-in uses an `AudioRecord` energy detector with echo cancellation and a calibration window.
+- Speech is queued sentence by sentence so playback starts after the first complete sentence.
 
-## 2026-10-30 — GitHub access deferred by the owner
+## 2026-10-31 — Fix the input-dispatch ANR
 
-- The coding environment initially had no pre-existing GitHub authentication, no `gh`, and no local Java/Gradle/Android SDK; a local JDK 17, Gradle 9.6.0 and Android SDK platform 37 were provisioned later for compile checks.
-- The owner explicitly directed that GitHub setup, repository creation, pushing and cloud builds be deferred until the full app is complete. The pending device-login process was stopped; no GitHub repository was created and nothing was pushed.
-- Consequence: no physical phone install or device test has happened yet; no APK is produced until the first cloud build, and no phase can be installed or tested on the phone before that. Compile errors will accumulate until the first CI run. The source will still be written to the documented stable versions and kept as build-ready as possible.
-- The workflows and phone-only signing instructions remain in `.github/workflows/` and `README.md`, ready to use when the owner chooses to publish the repository.
-- All work is confined to `/sdcard/JARVIS2`. The earlier `/sdcard/JARVIS` project and the Brahma AI prototype were read once for context, then left untouched.
+- `Channel.tryReceive()` returns a result object instead of throwing, so the old drain loop spun
+  forever on the main thread and Android killed the app for input-dispatch timeout. The drain now
+  stops on the first failed receive.
+- Interruption replaced the speech pipeline instead of disabling it permanently.
 
-## 2026-10-31 — Fix the input-dispatch ANR (freeze and dead microphone)
+## 2026-10-31 — Phase 3 tools, safety gates, action log and UI rebuild
 
-- `JarvisViewModel.interruptSpeech()` drained the speech channels with `runCatching { while (true) { channel.tryReceive() } }`. `Channel.tryReceive()` returns a result object instead of throwing, so the loop never ended: it spun forever on the calling thread. That caller is the main thread for Send, Stop, the mic button and the barge-in callback, which froze the UI until Android raised `Input dispatching timed out ... Waited 10000ms for MotionEvent` and killed the process. The same freeze made the microphone look broken, because `startListening()` stalls inside its interruption step before the recognizer is ever created.
-- The drain now stops on the first failed `tryReceive()`, so it finishes as soon as the queue is empty.
-- `interruptSpeech()` cancelled the speech pipeline without replacing it, and the pipeline's producer returned after the first `EndOfReply`. Between them, Jarvis could speak roughly once per process. The interruption now starts a fresh pipeline, and the producer keeps running so later replies are spoken too.
+- `ConfirmationGate` and `PermissionGate` live on the tool context, with bounded waits and cleanup in
+  `finally`, so a cancelled turn cannot jam the next one.
+- Tools run on `Dispatchers.IO`; the action log was a JSON file until Phase 4.
+- Calls and messages degrade to the dialler/composer when the direct permission is missing.
 
-## 2026-10-31 — Phase 3 tools, safety gates, action log and the UI rebuild
+## 2026-10-31 — Fish Audio repair (root causes)
 
-- **One gate pair, not per-tool logic.** `ConfirmationGate` and `PermissionGate` live on the `ToolContext`, so a tool asks for a yes or a permission in one line and the UI owns the dialog. Both waits are bounded (`CompletableDeferred` + a 120 s timeout) and clear themselves in a `finally`, so a cancelled turn (Stop) can never leave the gate jammed for the next one.
-- **The agent is never blocked forever.** A denied, timed-out or cancelled confirmation returns a normal "the owner declined" tool result, so the model can finish the sentence instead of hanging the loop.
-- **Action log is a small JSON file for now.** Room arrives with Phase 4 memory, and this log needs to exist today for the safety rules. `filesDir/action_log.json`, newest first, capped at 200 entries, loaded at startup and exposed as a `StateFlow`.
-- **Tools run on `Dispatchers.IO`.** Package queries, contact lookups and the camera are system calls; running them on the main thread was a guaranteed jank source (and the same class of bug as the earlier ANR fix).
-- **Calls and messages degrade instead of failing.** With `CALL_PHONE`/`SEND_SMS` granted the action happens directly after confirmation; without them Jarvis opens the dialler or the SMS composer pre-filled, which still completes the owner's request honestly.
-- **No Material icon dependency.** Those artifacts are not on this project's classpath, and adding them for a HUD would have been a dependency for decoration. The icon set is drawn in a 24-unit canvas instead (`HudIcon`), which also keeps one consistent thin stroke that matches the reference.
-- **The reference's "Memory" tab is the Action Log tab.** Memory does not exist until Phase 4, and a tab of placeholder memory cards would be a fake feature. The rest of the reference is matched in visual language: deep-navy glass, cyan hairlines, the reactor with tick and arc rings, wide-tracked labels, a boot sequence, and a bottom bar with the reactor mic in the centre.
-- **Readings are real or absent.** The reference's CPU/GPU figures are replaced by battery, memory, storage, network, battery temperature and ringer mode, all read from the device. The quick panel's torch and playback tiles drive the real hardware, and its status poll only runs while the panel is open.
-- **Boot animation does not fake loading.** It runs its own sequence but refuses to finish until the real settings load completes, and it replays only on a cold start (`rememberSaveable`).
-- **Deleted `ChatScreen`, `JarvisOnlineScreen` and `JarvisOrb`.** All three were superseded by the new screens and would otherwise be dead code; onboarding now uses the same reactor.
-- **A tool-aware line in the system prompt.** Small models otherwise answer "open YouTube" with an explanation instead of a call. The prompt now states that the tools act on the phone, that several can be called in order, and that confirmations are handled by the app.
+- The request shape was already close to the documented API, but the engine had three real faults:
+  it buffered the whole response instead of streaming it, it reported every failure as a raw
+  exception string, and it never reset `lastError`, so a successful retry still looked broken.
+- It now sends the documented request: `POST https://api.fish.audio/v1/tts`,
+  `Authorization: Bearer`, `format: "pcm"`, `sample_rate: 24000`, `latency: "balanced"`,
+  `normalize`, `prosody.speed` clamped to 0.5–2.0, and the `model` header.
+- **Default model is `s2.1-pro-free`**, the only Fish Audio model that works on a zero balance. A paid
+  model (`s2.1-pro`, `s2-pro`) can be typed into Voice settings; Fish Audio documents that `s1` is
+  being retired, so it is not offered as a default.
+- The response is read in 8 KiB chunks as it arrives, so the first sentence starts speaking while the
+  rest is generated. Only 429 and 5xx are retried once; 401/402/403/404/413 are surfaced with the
+  exact remedy ("choose s2.1-pro-free", "copy the key again", "voice id not found").
+- ElevenLabs got the same streaming and error contract. Its `pcm_24000` format matches, so both
+  voices share one playback path.
+
+## 2026-10-31 — Audio pipeline repair
+
+- **Ordering:** the old pipeline launched one coroutine per sentence and locked only after synthesis,
+  so a faster later sentence could play first. Synthesis is now one sequential coroutine, while
+  playback stays in a second coroutine, which keeps pipelining and guarantees order.
+- **Fading:** the old player faded the end of every write. With chunked streaming that would dip the
+  middle of a sentence. The synthesis loop now holds back one chunk and fades only the last chunk of
+  each sentence.
+- **System TTS hang:** `TextToSpeech.stop()` produced no `onDone`, and `onStop` was not implemented, so
+  the awaiting coroutine hung forever after a barge-in. `onStop` now completes the wait, and the wait
+  is bounded at 90 s.
+- **Audio focus:** `abandonAudioFocusRequest` was given a new request object, so the real focus was
+  never released. The active request is stored and released. Focus is `GAIN_TRANSIENT`, which pauses
+  music rather than merely ducking it.
+- **Drain:** waiting for playback is bounded at 30 s so a stalled playback-head report cannot hang a reply.
+
+## 2026-10-31 — One runtime, two clients (Phase 4 / 5 architecture)
+
+- All conversation, voice, memory and gate state moved from the ViewModel into an app-scoped
+  `JarvisCore`. The ViewModel is a thin adapter. This is required for background listening: when the
+  activity is destroyed the ViewModel dies, but the foreground service keeps the process and the
+  runtime alive.
+- The permission gate declines immediately when no screen is attached, and says so aloud. A
+  background turn cannot hang 120 s waiting for a dialog that cannot appear.
+- Confirmation behaves the same way: with no screen, sensitive actions are refused out loud instead
+  of silently timing out.
+- Provider CRUD stayed in the ViewModel but uses the runtime's single `SettingsRepository`. Two
+  DataStore instances for the same file are illegal, so the repository is created once in the core.
+
+## 2026-10-31 — Memory (Phase 4)
+
+- **FTS4, not FTS5.** The brief asks for FTS5, but Android's bundled SQLite does not guarantee the
+  FTS5 module across OEM builds. Room's FTS4 with the `unicode61` tokenizer is available everywhere
+  and covers the same keyword retrieval; the change is recorded here as the brief instructs.
+- The FTS table is **external content** (`contentEntity = MemoryEntity`) so Room's triggers keep it in
+  sync; a LIKE scan is the fallback if a MATCH expression is rejected.
+- Memories are de-duplicated by a normalised fingerprint (lowercase, punctuation removed) with a
+  unique index. Re-remembering the same fact raises its importance instead of adding a row.
+- **Two memory writers, on purpose:** the `remember_about_owner` tool saves immediately (so a fact
+  survives an instant force-stop), and a WorkManager job distils additional facts four minutes after
+  the last turn. The job is replaced on each turn, so it always runs after the conversation goes quiet.
+- Extraction is conservative: at most six facts, importance 1–5, secrets rejected by word list and
+  long-digit/API-key patterns, and a short summary per conversation.
+- Retrieval is per-turn: profile facts always, up to eight matching memories. The persona prompt tells
+  the model not to claim memories that are not in that block.
+- **"Forget everything"** deletes facts, memories, conversations, messages, summaries and skills, and
+  clears the on-screen transcript. The **action log is retained** because the safety rules require a
+  record of what Jarvis did; the confirmation dialog says so before running.
+- The action log moved from JSON to Room, with a one-time import of `action_log.json` (renamed to
+  `.migrated` afterwards).
+
+## 2026-10-31 — Always-on listening without a second SDK
+
+- The brief specifies Picovoice Porcupine. This build uses **wake-word matching on the recogniser's own
+  text** instead: the microphone is already open for speech recognition, so no extra binary, licence or
+  AccessKey is required, and the owner's existing free Picovoice key is not needed to test.
+- The trade-off is that the recogniser, not an always-on VAD, hears the room. Jarvis discards utterances
+  without the wake word (default `jarvis`, configurable) and can be switched to "answer everything" in
+  Voice settings. Porcupine remains a clean later addition behind the same `WakeWord` boundary.
+- Android 14 rules are respected: `foregroundServiceType="microphone"`, the matching permission, and the
+  service is only started from the visible app, its notification or the Quick Settings tile. It is
+  `START_NOT_STICKY` because a background restart would be refused anyway and look like a crash.
+- A partial wake lock is held only while the service runs. That is what keeps recognition alive with the
+  screen off, and it is why the wizard asks for unrestricted battery.
+- The service loop waits while Jarvis is thinking or speaking and while a manual microphone session is
+  open, because Android allows only one active speech recogniser.
+- Hands-free follow-up ("continuous microphone") only continues a conversation the owner started by
+  voice. The launch greeting no longer opens the microphone on its own.
+
+## 2026-10-31 — Screen control as single steps, not a runaway agent
+
+- The accessibility layer exposes one action per tool call (`read_screen`, `tap_screen`,
+  `type_on_screen`, `scroll_screen`, `press_system_key`). The model observes, acts, then observes again.
+  This is deliberately narrower than the brief's 15-step loop: every step is in the action log, a
+  confirmation cannot be bypassed mid-race, and "Stop" is immediate because nothing is queued.
+- Taps on labels containing send/pay/buy/delete/confirm/transfer/post/call always raise the existing
+  confirmation sheet, regardless of what the model believes it is tapping.
+- The blocklist matches keywords against the foreground package name and app label (banking,
+  payments, wallets, password managers, authenticators), is editable in Safety settings, and is
+  checked before any read or tap.
+- Password fields are reported as `[password field]` and never their contents. No screen text is sent
+  anywhere unless the owner asked for it and the model calls `read_screen`.
+
+## 2026-10-31 — Dependency versions added for Phase 4
+
+- **KSP 2.3.13** (Kotlin 2.4 line), **Room 2.8.5**, **WorkManager 2.12.0**, **androidx.core 1.19.1**
+  and **lifecycle-service 2.11.0**. Verified against Google Maven and the KSP release notes before
+  use; the local `assembleDebug` and `testDebugUnitTest` runs are green with them.
