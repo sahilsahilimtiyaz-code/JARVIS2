@@ -39,6 +39,7 @@
 - [x] Add audio playback, audio focus, barge-in detection and sentence queueing.
 - [x] Add microphone permission flow and voice settings screen.
 - [x] Speak launch greeting and interrupt speech on Stop or detected speech.
+- [x] Fix the main-thread ANR that froze the app (and blocked the mic) on Send, Stop and mic tap, and keep the speech pipeline alive across interruptions.
 - [x] Green local build and unit tests.
 
 ## Phase 3 — Tier 1 phone tools

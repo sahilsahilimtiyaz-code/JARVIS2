@@ -51,3 +51,9 @@
 - Consequence: no physical phone install or device test has happened yet; no APK is produced until the first cloud build, and no phase can be installed or tested on the phone before that. Compile errors will accumulate until the first CI run. The source will still be written to the documented stable versions and kept as build-ready as possible.
 - The workflows and phone-only signing instructions remain in `.github/workflows/` and `README.md`, ready to use when the owner chooses to publish the repository.
 - All work is confined to `/sdcard/JARVIS2`. The earlier `/sdcard/JARVIS` project and the Brahma AI prototype were read once for context, then left untouched.
+
+## 2026-10-31 — Fix the input-dispatch ANR (freeze and dead microphone)
+
+- `JarvisViewModel.interruptSpeech()` drained the speech channels with `runCatching { while (true) { channel.tryReceive() } }`. `Channel.tryReceive()` returns a result object instead of throwing, so the loop never ended: it spun forever on the calling thread. That caller is the main thread for Send, Stop, the mic button and the barge-in callback, which froze the UI until Android raised `Input dispatching timed out ... Waited 10000ms for MotionEvent` and killed the process. The same freeze made the microphone look broken, because `startListening()` stalls inside its interruption step before the recognizer is ever created.
+- The drain now stops on the first failed `tryReceive()`, so it finishes as soon as the queue is empty.
+- `interruptSpeech()` cancelled the speech pipeline without replacing it, and the pipeline's producer returned after the first `EndOfReply`. Between them, Jarvis could speak roughly once per process. The interruption now starts a fresh pipeline, and the producer keeps running so later replies are spoken too.

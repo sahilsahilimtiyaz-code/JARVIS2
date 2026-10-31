@@ -156,8 +156,10 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
                                 }
                             }
                             SpeechItem.EndOfReply -> {
-                                speechOutbox.send(SpeechPayload.EndOfReply)
-                                return@launch
+                                // Keep this producer alive: it has to serve the next
+                                // reply as well. Sending under the same lock keeps
+                                // the marker behind a sentence still synthesising.
+                                order.withLock { speechOutbox.send(SpeechPayload.EndOfReply) }
                             }
                         }
                     }
@@ -915,18 +917,20 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun interruptSpeech() {
-        // Cancel the pipeline to stop both synthesis and playback
+        // Cancel the pipeline to stop both synthesis and playback.
         speechPipeline?.cancel()
-        // Drain the queues
-        runCatching {
-            while (true) {
-                speechInbox.tryReceive()
-            }
+        speechPipeline = null
+        // tryReceive() returns a ChannelResult instead of throwing, so a
+        // `while (true)` here never exits: it spins forever on the caller's
+        // thread. That caller is usually the main thread (Send, Stop, the mic
+        // button, the barge-in callback), which froze the UI long enough for
+        // Android to raise an input-dispatch ANR. Drain until the queue is
+        // actually empty instead.
+        while (true) {
+            if (!speechInbox.tryReceive().isSuccess) break
         }
-        runCatching {
-            while (true) {
-                speechOutbox.tryReceive()
-            }
+        while (true) {
+            if (!speechOutbox.tryReceive().isSuccess) break
         }
         audioPlayer.stop()
         systemTtsEngine.stop()
@@ -934,6 +938,10 @@ class JarvisViewModel(application: Application) : AndroidViewModel(application) 
         speaking = false
         _ui.update { it.copy(speaking = false) }
         abandonAudioFocus()
+        // cancel() killed the pipeline for good, so replace it. Without this,
+        // nothing is ever spoken after the first interruption, and every send,
+        // stop and mic tap interrupts.
+        startSpeechPipeline()
     }
 
     private suspend fun playPayload(payload: SpeechPayload) {
